@@ -4,10 +4,11 @@
  *
  * ── Status is written down, three times over ──────────────────────────────
  * The crowd tokens (`theme.colors.crowd`) are AA-safe as text and border ink,
- * but they are still only hue. So a level is carried by a SHAPE (the glyph
- * vocabulary shared with `CrowdingSheet` — seat / riders / standing figure /
- * barred ring), by a WORD (`crowdingLabel`), and by a second line saying where
- * the reading came from. Strip the colour out entirely and the banner still
+ * but they are still only hue. So a level is carried by a SHAPE
+ * (`crowdingGlyph` — seat / riders / standing figure / barred ring), by a
+ * WORD (`crowdingLabel`), and by a second line saying where the reading came
+ * from — all three read from the single crowding vocabulary in
+ * `src/utils/crowding.ts`. Strip the colour out entirely and the banner still
  * says exactly the same thing; that is the test it has to pass.
  *
  * "Estimated" is a status too, and it is the one most easily lost. It gets the
@@ -20,36 +21,18 @@
  * a reporting sheet needs.
  */
 import { theme } from "@/src/constants/theme";
-import type { CrowdingInfo } from "@/src/api/types";
 import { useCrowding } from "@/src/queries/crowding";
-import { crowdingLabel, crowdingSourceLabel } from "@/src/utils/crowding";
+import { crowdingColor, crowdingGlyph, crowdingLabel, crowdingSourceLabel } from "@/src/utils/crowding";
 import { Press } from "@/src/components/ui/motion";
-import { ChevronRight, CircleSlash, type LucideIcon } from "lucide-react-native";
+import { ChevronRight } from "lucide-react-native";
 import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { CROWD_GLYPHS, CrowdingSheet } from "./CrowdingSheet";
+import { CrowdingSheet } from "./CrowdingSheet";
 
 interface CrowdingBannerProps {
   vehicleId: string;
   routeId: string;
   tripId?: string;
-}
-
-/** True when there is no observed reading — no data at all, or a schedule guess. */
-function isEstimated(info: CrowdingInfo | null | undefined): boolean {
-  return !info || info.source === "estimated";
-}
-
-/** AA crowding accent from theme tokens — same vocabulary as CrowdingBadge. */
-function crowdThemeColor(info: CrowdingInfo | null | undefined): string {
-  if (isEstimated(info)) return theme.colors.crowd.estimated;
-  return theme.colors.crowd[info!.level] ?? theme.colors.crowd.estimated;
-}
-
-/** Same per-level shapes the report sheet uses; a slashed ring means "not observed". */
-function crowdGlyph(info: CrowdingInfo | null | undefined): LucideIcon {
-  if (isEstimated(info)) return CircleSlash;
-  return CROWD_GLYPHS[info!.level] ?? CircleSlash;
 }
 
 export function CrowdingBanner({ vehicleId, routeId, tripId }: CrowdingBannerProps) {
@@ -58,10 +41,10 @@ export function CrowdingBanner({ vehicleId, routeId, tripId }: CrowdingBannerPro
 
   if (isLoading) return null;
 
-  const accentColor = crowdThemeColor(crowding);
+  const accentColor = crowdingColor(crowding);
   const label = crowdingLabel(crowding);
   const sourceLabel = crowding ? crowdingSourceLabel(crowding) : "No crowding data yet";
-  const Glyph = crowdGlyph(crowding);
+  const Glyph = crowdingGlyph(crowding);
 
   return (
     <>
