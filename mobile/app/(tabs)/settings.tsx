@@ -15,6 +15,7 @@ import {
   scheduleClassReminders,
   sendTestNotification,
 } from "@/src/notifications/classReminders";
+import { isAllowedApiOrigin } from "@/src/storage/apiUrl";
 import { MAX_BUFFER, MAX_WEIGHT_KG, MIN_BUFFER, MIN_WEIGHT_KG } from "@/src/storage/recommendationSettings";
 import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
@@ -172,27 +173,27 @@ export default function SettingsScreen() {
     );
   }, [signOut]);
 
+  // Shared allowlist, not just "any http(s) URL": the network layer attaches the
+  // session token and API key to whatever base URL is stored, so accepting an
+  // arbitrary host here would hand both to it.
   const isValidApiUrl = useCallback((value: string) => {
     const url = value.trim().replace(/\/$/, "");
     if (!url) return false;
-    try {
-      const u = new URL(url);
-      return u.protocol === "http:" || u.protocol === "https:";
-    } catch {
-      return false;
-    }
+    return isAllowedApiOrigin(url);
   }, []);
 
   const save = useCallback(async () => {
     const url = input.trim().replace(/\/$/, "");
     if (!isValidApiUrl(input)) {
-      Alert.alert("Invalid URL", "Enter a valid API base URL (e.g. http://localhost:8000 or https://api.example.com).");
+      Alert.alert("Invalid URL", "Enter an allowed API base URL (e.g. http://localhost:8000 or the production server).");
       return;
     }
     setSaving(true);
     try {
-      await setApiBaseUrl(url);
+      // Key first: if the URL write throws, we must not end up with the old
+      // key paired against a half-applied connection config.
       await setApiKey(apiKeyInput.trim() || null);
+      await setApiBaseUrl(url);
       Alert.alert("Saved", "API base URL and optional API key saved.");
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to save.");
@@ -267,6 +268,7 @@ export default function SettingsScreen() {
         </View>
       </FadeInView>
 
+      {__DEV__ ? (
       <FadeInView delay={70}>
         <View style={styles.sectionHeaderWrap}>
           <SectionHeader title="Connection" />
@@ -329,6 +331,7 @@ export default function SettingsScreen() {
           </View>
         </View>
       </FadeInView>
+      ) : null}
 
       <FadeInView delay={140}>
         <View style={styles.sectionHeaderWrap}>

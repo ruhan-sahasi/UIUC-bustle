@@ -177,7 +177,10 @@ export interface ShareTripRequest {
 
 export interface ShareTripResponse {
   token: string;
-  url: string;
+  /** May be absent (or null) on newer backends; construct `${apiBaseUrl}/t/${token}` client-side. */
+  url?: string;
+  /** Writer credential, returned only at creation. Send as X-Edit-Token on PATCH. */
+  edit_token?: string;
 }
 
 /** PATCH /share/trips/{token} */

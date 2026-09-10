@@ -399,6 +399,9 @@ export default function WalkNavScreen() {
   const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const arrivedRef = useRef(false);
   const shareTokenRef = useRef<string | null>(null);
+  // Writer credential from createShareTrip — required by the backend on PATCH,
+  // never part of the shared URL.
+  const shareEditTokenRef = useRef<string | null>(null);
   const walkedDistanceMRef = useRef(0);
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null);
   const walkingRouteFetchedRef = useRef(false);
@@ -429,8 +432,10 @@ export default function WalkNavScreen() {
     try {
       const result = await createShareTrip(apiBaseUrl, body, { apiKey: apiKey ?? undefined });
       shareTokenRef.current = result.token;
-      const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}. ${result.url}`;
-      await Share.share({ message: msg, url: result.url });
+      shareEditTokenRef.current = result.edit_token ?? null;
+      const shareUrl = result.url ?? `${apiBaseUrl.replace(/\/$/, "")}/t/${result.token}`;
+      const msg = `Heading to ${body.destination}${routeId ? ` · Bus ${routeId}` : ""}. ${shareUrl}`;
+      await Share.share({ message: msg, url: shareUrl });
     } catch {
       setShareErrorToast("Couldn't reach share server — sharing directly");
       if (shareToastTimerRef.current) clearTimeout(shareToastTimerRef.current);
@@ -463,7 +468,7 @@ export default function WalkNavScreen() {
   // "waiting" PATCH (fired in the location callback) to avoid a request ordering race.
   useEffect(() => {
     if (navPhase === "bus" && shareTokenRef.current) {
-      patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined });
+      patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "on_bus" }, { apiKey: apiKey ?? undefined, editToken: shareEditTokenRef.current });
     }
     if (navPhase === "bus") {
       capture("bus_phase_entered");
@@ -729,7 +734,7 @@ export default function WalkNavScreen() {
                 arrivedRef.current = false; // reset so we can detect alighting stop arrival
                 const { apiBaseUrl: base, apiKey: key } = apiRef.current;
                 if (shareTokenRef.current) {
-                  patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined });
+                  patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined, editToken: shareEditTokenRef.current });
                 }
                 setNavPhase("bus");
                 // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"
@@ -770,7 +775,7 @@ export default function WalkNavScreen() {
       capture("trip_completed");
       if (timerRef.current) clearInterval(timerRef.current);
       if (shareTokenRef.current) {
-        patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined });
+        patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined, editToken: shareEditTokenRef.current });
       }
       setShowCompletion(true);
       (async () => {
@@ -808,7 +813,7 @@ export default function WalkNavScreen() {
     if (isBusMode && navPhaseRef.current === "walking") {
       const { apiBaseUrl: base, apiKey: key } = apiRef.current;
       if (shareTokenRef.current) {
-        patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined });
+        patchShareTrip(base, shareTokenRef.current, { phase: "waiting" }, { apiKey: key ?? undefined, editToken: shareEditTokenRef.current });
       }
       setNavPhase("bus");
       // on_bus PATCH is sent by a separate useEffect watching navPhase === "bus"

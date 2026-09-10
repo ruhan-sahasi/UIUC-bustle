@@ -1,5 +1,6 @@
 import { log } from "@/src/telemetry/logBuffer";
 import { supabase } from "@/src/auth/supabaseClient";
+import { isAllowedApiOrigin } from "@/src/storage/apiUrl";
 import type {
   Building,
   BuildingsResponse,
@@ -33,8 +34,13 @@ export interface RequestOptions {
   apiKey?: string | null;
 }
 
-async function mergeHeaders(init?: RequestInit, apiKey?: string | null): Promise<Headers> {
+async function mergeHeaders(url: string, init?: RequestInit, apiKey?: string | null): Promise<Headers> {
   const headers = init?.headers instanceof Headers ? new Headers(init.headers) : new Headers(init?.headers as HeadersInit);
+  // Credentials are pinned to known API origins. The base URL is
+  // attacker-influencable state (Settings input, tampered AsyncStorage), so
+  // attaching the Supabase JWT and API key unconditionally would hand both to
+  // any host — including via background refresh with no UI in sight.
+  if (!isAllowedApiOrigin(url)) return headers;
   if (apiKey?.trim()) headers.set("X-API-Key", apiKey.trim());
   const {
     data: { session },
@@ -163,7 +169,7 @@ async function fetchWithRetry(
 ): Promise<Response> {
   const { signal: userSignal, apiKey, retryOn429 = true, ...rest } = init ?? {};
   const replayable = isIdempotent(rest.method);
-  const headers = await mergeHeaders(rest, apiKey);
+  const headers = await mergeHeaders(url, rest, apiKey);
   let requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
   let lastError: unknown;
   let lastResponse: Response | undefined;
@@ -206,7 +212,7 @@ async function fetchWithRetry(
             if (!refreshAttempted) {
               refreshAttempted = true;
               await supabase.auth.refreshSession();
-              const refreshedHeaders = await mergeHeaders(rest, apiKey);
+              const refreshedHeaders = await mergeHeaders(url, rest, apiKey);
               requestInit = { ...requestInit, headers: refreshedHeaders };
               attempt--; // the refresh replay must not consume one of the retry slots
               continue; // retry with refreshed token
@@ -656,12 +662,17 @@ export function patchShareTrip(
   baseUrl: string,
   token: string,
   body: PatchShareTripRequest,
-  opts?: RequestOptions
+  opts?: RequestOptions & { editToken?: string | null }
 ): void {
   // Static label: pathLabel is logged, and the token grants access to the trip.
   fetchWithRetry(`${baseUrl}/share/trips/${token}`, "/share/trips/:token", {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // The backend requires the writer credential from creation; the public
+      // view token alone must no longer be able to mutate the trip.
+      ...(opts?.editToken ? { "X-Edit-Token": opts.editToken } : {}),
+    },
     body: JSON.stringify(body),
     apiKey: opts?.apiKey,
   }).catch(() => {/* silent — stale phase on recipient is acceptable */});
