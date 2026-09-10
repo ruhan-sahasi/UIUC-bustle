@@ -28,12 +28,15 @@ import { useEffect } from "react";
 import * as Sentry from "@sentry/react-native";
 import { PostHogProvider, usePostHog } from "posthog-react-native";
 import { theme } from "@/src/constants/theme";
+import { scrubBreadcrumb } from "@/src/telemetry/sentryScrub";
 
 // Sentry — init before anything else; no-ops silently when DSN is absent
 if (process.env.NODE_ENV !== "test" && process.env.EXPO_PUBLIC_SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
     tracesSampleRate: 0.1,
+    // Strip query strings (GPS coords) and share tokens from http breadcrumb URLs
+    beforeBreadcrumb: scrubBreadcrumb,
   });
 }
 
