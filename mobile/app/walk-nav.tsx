@@ -16,7 +16,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { AlertTriangle, Bus, Check, Flame, Footprints, MapPin, PartyPopper, Share2, Timer, X } from "lucide-react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
   Platform,
@@ -43,6 +43,7 @@ import {
   useGlide,
 } from "@/src/components/ui/motion";
 import { getEntranceCoords } from "@/src/utils/buildingEntrance";
+import { VehicleMarker, vehicleMarkerKey } from "@/src/components/map";
 
 const ARRIVAL_THRESHOLD_M = 30;
 const OFF_ROUTE_THRESHOLD_M = 120;
@@ -206,6 +207,46 @@ function HudPrimaryCell({
       <Text style={styles.hudPrimaryLabel}>{label}</Text>
       {children}
     </View>
+  );
+}
+
+/**
+ * Owns the per-second elapsed tick so the tree above it never re-renders on
+ * the timer. Before this component, a root setInterval set `durationSeconds`
+ * on the screen itself, which re-rendered the MapView and every Marker and
+ * Polyline once a second for the whole trip.
+ *
+ * Both HUD readouts of elapsed time render through this (only one variant is
+ * mounted at a time, so only one interval ever runs). The spoken label is the
+ * stable whole-minute one in BOTH variants — the seconds column rolls
+ * visually, but VoiceOver only hears a change when the minute changes.
+ */
+function ElapsedTicker({
+  startedAtMs,
+  running,
+  variant,
+}: { startedAtMs: number; running: boolean; variant: "stat" | "primary" }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
+  );
+  useEffect(() => {
+    if (!running) return;
+    const tick = () =>
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [running, startedAtMs]);
+
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const a11yLabel = `Elapsed ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  if (variant === "stat") {
+    return <HudStat icon={Timer} value={formatElapsed(elapsedSeconds)} a11yLabel={a11yLabel} />;
+  }
+  return (
+    <HudPrimaryCell label="Elapsed" a11yLabel={a11yLabel}>
+      <HudElapsedValue totalSeconds={elapsedSeconds} />
+    </HudPrimaryCell>
   );
 }
 
@@ -378,11 +419,17 @@ export default function WalkNavScreen() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceM, setDistanceM] = useState<number | null>(null);
   const [stepCount, setStepCount] = useState(0);
-  const [durationSeconds, setDurationSeconds] = useState(0);
+  // Elapsed-time DISPLAY lives in <ElapsedTicker /> so its 1 s tick cannot
+  // re-render the map tree; the screen only keeps the one-shot value frozen at
+  // arrival for the summary modal and the activity-log write.
+  const [finalDurationSeconds, setFinalDurationSeconds] = useState(0);
   const [caloriesBurned, setCaloriesBurned] = useState(0);
   const [arrived, setArrived] = useState(false);
   const [showCompletion, setShowCompletion] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  // True when the OSRM walking-route fetch failed or came back degenerate, so
+  // the map is showing the crow-flies fallback line instead of a real route.
+  const [routeUnavailable, setRouteUnavailable] = useState(false);
   const [pedometerAvailable, setPedometerAvailable] = useState(false);
   const [encouragement, setEncouragement] = useState<string | null>(null);
   const [busVehicles, setBusVehicles] = useState<VehicleInfo[]>([]);
@@ -395,7 +442,6 @@ export default function WalkNavScreen() {
   const startTimeRef = useRef<number>(Date.now());
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const pedometerSubRef = useRef<{ remove: () => void } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const vehiclePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const arrivedRef = useRef(false);
   const shareTokenRef = useRef<string | null>(null);
@@ -480,16 +526,11 @@ export default function WalkNavScreen() {
     walkingRouteCoordsRef.current = walkingRouteCoords;
   }, [walkingRouteCoords]);
 
-  // Start timer
+  // Trip clock starts at mount. startTimeRef stays on the screen: it is the
+  // origin for both the ElapsedTicker display and the one-shot summary write
+  // at arrival. No per-second state lives at the screen root.
   useEffect(() => {
     startTimeRef.current = Date.now();
-    timerRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
-      setDurationSeconds(elapsed);
-    }, 1000);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
   }, []);
 
   // Live bus vehicle poll
@@ -553,11 +594,14 @@ export default function WalkNavScreen() {
       );
       if (res.coords.length > 1) {
         setWalkingRouteCoords(res.coords.map(([lat, lng]) => ({ latitude: lat, longitude: lng })));
+        setRouteUnavailable(false);
       } else {
+        setRouteUnavailable(true);
         walkingRouteFetchedRef.current = false;
         walkingRouteRetryAtRef.current = Date.now() + WALK_ROUTE_RETRY_MS;
       }
     } catch {
+      setRouteUnavailable(true);
       walkingRouteFetchedRef.current = false;
       walkingRouteRetryAtRef.current = Date.now() + WALK_ROUTE_RETRY_MS;
     }
@@ -773,7 +817,9 @@ export default function WalkNavScreen() {
     if (arrived) {
       if (showCompletion) return; // already handled
       capture("trip_completed");
-      if (timerRef.current) clearInterval(timerRef.current);
+      // One-shot summary write: freeze the trip duration off startTimeRef. The
+      // live tickers stop on their own via running={!arrived}.
+      setFinalDurationSeconds(Math.max(0, Math.floor((Date.now() - startTimeRef.current) / 1000)));
       if (shareTokenRef.current) {
         patchShareTrip(apiBaseUrl, shareTokenRef.current, { phase: "arrived" }, { apiKey: apiKey ?? undefined, editToken: shareEditTokenRef.current });
       }
@@ -832,19 +878,18 @@ export default function WalkNavScreen() {
       walkingModeId: modeId,
       distanceM: Math.round(walkedDistanceMRef.current),
       stepCount,
-      durationSeconds,
+      durationSeconds: finalDurationSeconds,
       caloriesBurned,
       from: "Current location",
       to: destName,
     });
     setShowCompletion(false);
     router.back();
-  }, [modeId, stepCount, durationSeconds, caloriesBurned, destName, router]);
+  }, [modeId, stepCount, finalDurationSeconds, caloriesBurned, destName, router]);
 
   const onCancel = useCallback(() => {
     locationSubRef.current?.remove();
     pedometerSubRef.current?.remove();
-    if (timerRef.current) clearInterval(timerRef.current);
     if (vehiclePollRef.current) clearInterval(vehiclePollRef.current);
     router.back();
   }, [router]);
@@ -883,6 +928,38 @@ export default function WalkNavScreen() {
   const rawDistToUiuc = Math.sqrt((rawCenter.lat - UIUC_CENTER.lat) ** 2 + (rawCenter.lng - UIUC_CENTER.lng) ** 2) * 111_000;
   const mapCenter = rawDistToUiuc > 100_000 ? { lat: target.lat, lng: target.lng } : rawCenter;
 
+  // Marker/polyline coordinate objects are memoized so a screen re-render does
+  // not hand every rasterized marker a brand-new coordinate identity.
+  const userCoordinate = useMemo(
+    () => (userLocation ? { latitude: userLocation.lat, longitude: userLocation.lng } : null),
+    [userLocation]
+  );
+  const targetCoordinate = useMemo(
+    () =>
+      navPhase === "bus"
+        ? { latitude: alightingLat, longitude: alightingLng }
+        : { latitude: destLat, longitude: destLng },
+    [navPhase, alightingLat, alightingLng, destLat, destLng]
+  );
+  const finalDestCoordinate = useMemo(
+    () => (hasFinalDest ? { latitude: finalDestLat, longitude: finalDestLng } : null),
+    [hasFinalDest, finalDestLat, finalDestLng]
+  );
+  const fallbackLineCoords = useMemo(
+    () =>
+      userLocation
+        ? [
+            { latitude: userLocation.lat, longitude: userLocation.lng },
+            { latitude: destLat, longitude: destLng },
+          ]
+        : null,
+    [userLocation, destLat, destLng]
+  );
+  const busStopMarkers = useMemo(
+    () => busStops.map((s) => ({ stop: s, coordinate: { latitude: s.lat, longitude: s.lng } })),
+    [busStops]
+  );
+
   return (
     <View style={styles.container}>
       {Platform.OS !== "web" && (
@@ -898,9 +975,9 @@ export default function WalkNavScreen() {
           }}
         >
           {/* User location — navy dot with pulse ring using snapped coords so it shows on UIUC map */}
-          {userLocation && (
+          {userCoordinate && (
             <Marker
-              coordinate={{ latitude: userLocation.lat, longitude: userLocation.lng }}
+              coordinate={userCoordinate}
               anchor={{ x: 0.5, y: 0.5 }}
               tracksViewChanges={false}
             >
@@ -915,18 +992,15 @@ export default function WalkNavScreen() {
 
           {/* Intermediate target marker (boarding stop or alighting stop) */}
           <Marker
-            coordinate={navPhase === "bus"
-              ? { latitude: alightingLat, longitude: alightingLng }
-              : { latitude: destLat, longitude: destLng }
-            }
+            coordinate={targetCoordinate}
             title={navPhase === "bus" ? (alightingStopName || "Alighting stop") : destName}
             pinColor={theme.colors.secondary}
           />
 
           {/* Final destination pin — always visible */}
-          {hasFinalDest && (
+          {finalDestCoordinate && (
             <Marker
-              coordinate={{ latitude: finalDestLat, longitude: finalDestLng }}
+              coordinate={finalDestCoordinate}
               anchor={{ x: 0.5, y: 1 }}
               tracksViewChanges={false}
               title={finalDestName}
@@ -989,32 +1063,19 @@ export default function WalkNavScreen() {
               />
             </React.Fragment>
           )}
-          {navPhase === "walking" && walkingRouteCoords.length <= 1 && userLocation && (
-            <React.Fragment>
-              <Polyline
-                coordinates={[
-                  { latitude: userLocation.lat, longitude: userLocation.lng },
-                  { latitude: destLat, longitude: destLng },
-                ]}
-                strokeColor="rgba(255,255,255,0.85)"
-                strokeWidth={6}
-                lineDashPattern={[8, 6]}
-                lineCap={"round" as any}
-                zIndex={8}
-              />
-              <Polyline
-                key="walking-fallback"
-                coordinates={[
-                  { latitude: userLocation.lat, longitude: userLocation.lng },
-                  { latitude: destLat, longitude: destLng },
-                ]}
-                strokeColor={theme.colors.navy}
-                strokeWidth={3}
-                lineDashPattern={[8, 6]}
-                lineCap={"round" as any}
-                zIndex={9}
-              />
-            </React.Fragment>
+          {/* Crow-flies fallback — deliberately NOT styled like a routed path:
+              muted grey, sparse dots, no white casing. It is a bearing hint,
+              not a walkable route, and the banner above the map says so. */}
+          {navPhase === "walking" && walkingRouteCoords.length <= 1 && fallbackLineCoords && (
+            <Polyline
+              key="walking-fallback"
+              coordinates={fallbackLineCoords}
+              strokeColor={theme.colors.textMuted}
+              strokeWidth={3}
+              lineDashPattern={[2, 12]}
+              lineCap={"round" as any}
+              zIndex={9}
+            />
           )}
 
           {/* Bus route shape — visible in BOTH walking and bus phases */}
@@ -1040,53 +1101,27 @@ export default function WalkNavScreen() {
             </React.Fragment>
           )}
 
-          {/* Bus phase: stop markers */}
-          {navPhase === "bus" && busStops.map((s) => (
-            s.stop_id === alightingStopId ? (
-              <Marker
-                key={s.stop_id}
-                coordinate={{ latitude: s.lat, longitude: s.lng }}
-                title={s.stop_name}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <View style={{
-                  width: 22, height: 22, borderRadius: 11,
-                  backgroundColor: theme.colors.surface,
-                  borderWidth: 3, borderColor: theme.colors.error,
-                  shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-                  shadowOpacity: 0.3, shadowRadius: 2, elevation: 3,
-                }} />
-              </Marker>
-            ) : (
-              <Marker
-                key={s.stop_id}
-                coordinate={{ latitude: s.lat, longitude: s.lng }}
-                title={s.stop_name}
-                anchor={{ x: 0.5, y: 0.5 }}
-              >
-                <View style={{
-                  width: 14, height: 14, borderRadius: 7,
-                  backgroundColor: theme.colors.surface,
-                  borderWidth: 2, borderColor: theme.colors.navy,
-                }} />
-              </Marker>
-            )
-          ))}
-
-          {/* Live bus vehicles — navy circle with white Bus icon */}
-          {busVehicles.map((v) => (
+          {/* Bus phase: stop markers. Children rasterize once under
+              tracksViewChanges={false}; the alighting/regular face is baked
+              into the key so a change would remount and redraw exactly once. */}
+          {navPhase === "bus" && busStopMarkers.map(({ stop: s, coordinate }) => (
             <Marker
-              key={`bus-${v.vehicle_id}`}
-              coordinate={{ latitude: v.lat, longitude: v.lng }}
-              title={`Bus ${v.route_id}`}
-              description={v.headsign || undefined}
+              key={`${s.stop_id}-${s.stop_id === alightingStopId ? "alight" : "stop"}`}
+              coordinate={coordinate}
+              title={s.stop_name}
               anchor={{ x: 0.5, y: 0.5 }}
               tracksViewChanges={false}
             >
-              <View style={styles.busMarker}>
-                <Bus size={14} color="#fff" strokeWidth={2.5} />
-              </View>
+              <View
+                style={s.stop_id === alightingStopId ? styles.stopDotAlight : styles.stopDot}
+              />
             </Marker>
+          ))}
+
+          {/* Live bus vehicles — shared puck that glides between fixes. One
+              route's buses, so no glide cap is needed here. */}
+          {busVehicles.map((v) => (
+            <VehicleMarker key={vehicleMarkerKey(v)} vehicle={v} />
           ))}
         </MapView>
       )}
@@ -1138,6 +1173,12 @@ export default function WalkNavScreen() {
                   <TickingCountdown targetMs={busDepEpochMs} nowLabel="Departing" style={styles.bannerChipText} />
                 </View>
               )}
+            </FadeInView>
+          )}
+          {!locationError && navPhase === "walking" && routeUnavailable && walkingRouteCoords.length <= 1 && (
+            <FadeInView dy={-10} style={[styles.banner, styles.bannerNavy]}>
+              <AlertTriangle size={16} color={theme.colors.textOnNavy} strokeWidth={2.2} />
+              <Text style={styles.bannerText}>Walking route unavailable — showing a direct line.</Text>
             </FadeInView>
           )}
           {!locationError && !busMissed && navPhase === "bus" && (
@@ -1222,18 +1263,13 @@ export default function WalkNavScreen() {
               )}
             </HudPrimaryCell>
           ) : (
-            <HudPrimaryCell
-              label="Elapsed"
-              a11yLabel={`Elapsed ${Math.floor(durationSeconds / 60)} minutes`}
-            >
-              <HudElapsedValue totalSeconds={durationSeconds} />
-            </HudPrimaryCell>
+            <ElapsedTicker startedAtMs={startTimeRef.current} running={!arrived} variant="primary" />
           )}
         </View>
 
         <View style={styles.hudStatsRow}>
           {navPhase === "walking" && (
-            <HudStat icon={Timer} value={formatElapsed(durationSeconds)} a11yLabel={`Elapsed ${formatElapsed(durationSeconds)}`} />
+            <ElapsedTicker startedAtMs={startTimeRef.current} running={!arrived} variant="stat" />
           )}
           <HudStat icon={Flame} value={`${caloriesBurned.toFixed(1)} kcal`} a11yLabel={`${caloriesBurned.toFixed(1)} kilocalories burned`} />
           {pedometerAvailable && (
@@ -1277,7 +1313,7 @@ export default function WalkNavScreen() {
           <ArrivalCard
             destName={destName}
             distanceLabel={formatDistance(walkedDistanceMRef.current)}
-            durationLabel={formatElapsed(durationSeconds)}
+            durationLabel={formatElapsed(finalDurationSeconds)}
             energyLabel={`${caloriesBurned.toFixed(1)} kcal`}
             stepsLabel={pedometerAvailable ? String(stepCount) : null}
             encouragement={encouragement}
@@ -1304,19 +1340,26 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 4,
   },
-  busMarker: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: theme.colors.navy,
-    borderWidth: 2,
-    borderColor: theme.colors.orange,
-    alignItems: "center",
-    justifyContent: "center",
+  stopDotAlight: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 3,
+    borderColor: theme.colors.error,
     shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 5,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  stopDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 2,
+    borderColor: theme.colors.navy,
   },
 
   // ── Top overlay: single stacked banner slot + cancel ────────────────────
