@@ -14,14 +14,18 @@ name: Daily Production-Readiness Agent
 #     11:00 PT in winter (PST). Adjust if you care about the exact hour.
 #   - PRs created with the default GITHUB_TOKEN do NOT trigger other workflows, so
 #     ci.yml will not auto-run on the agent's PRs. The agent therefore runs the test
-#     suite inside this job and gates its own merge on that. To have ci.yml run on
-#     the agent's PRs, use a Personal Access Token secret instead of GITHUB_TOKEN.
+#     suite inside this job and reports the results in the PR for the human reviewer.
+#     To have ci.yml run on the agent's PRs, use a Personal Access Token secret
+#     instead of GITHUB_TOKEN.
 
 on:
   schedule:
     - cron: "0 19 * * *"   # ~noon Pacific (UTC; see DST caveat above)
   workflow_dispatch: {}    # allows manual "Run workflow" for testing
 
+# contents: write is kept ONLY because the agent must push its auto/prod-ready-*
+# branch to open a PR; pull-requests: write lets it open that PR. Nothing here
+# merges — a human reviews and merges every agent PR.
 permissions:
   contents: write
   pull-requests: write
@@ -34,7 +38,7 @@ jobs:
   agent:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -51,19 +55,19 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: steps.auth.outputs.ready == 'true'
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.auth.outputs.ready == 'true'
         with:
           node-version: "20"
 
       - name: Install Claude Code CLI
         if: steps.auth.outputs.ready == 'true'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.266
 
       - name: Run the production-readiness agent
         if: steps.auth.outputs.ready == 'true'
@@ -72,6 +76,17 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Explicit tool grant instead of --dangerously-skip-permissions:
+          # read/edit files, run git + tests, and open (never merge) a PR.
           claude -p "$(cat .github/agent/daily-prompt.md)" \
-            --dangerously-skip-permissions \
+            --allowedTools "Read" "Glob" "Grep" "Edit" "Write" \
+              "Bash(git config:*)" "Bash(git status:*)" "Bash(git diff:*)" \
+              "Bash(git log:*)" "Bash(git add:*)" "Bash(git commit:*)" \
+              "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git branch:*)" \
+              "Bash(git push:*)" \
+              "Bash(gh pr list:*)" "Bash(gh pr view:*)" "Bash(gh pr create:*)" \
+              "Bash(pip install -r requirements.txt)" \
+              "Bash(python -m pytest:*)" "Bash(alembic upgrade:*)" \
+              "Bash(npm ci)" "Bash(node_modules/.bin/jest:*)" \
+              "Bash(node_modules/.bin/tsc:*)" \
             --max-turns 120
