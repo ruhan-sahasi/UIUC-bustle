@@ -39,7 +39,9 @@ async def test_check_rate_limit(pg_pool):
 async def test_get_reports_by_route_grouped(pg_pool):
     await insert_report(pg_pool, "V1", "5", None, 1, "t", None, None)
     await insert_report(pg_pool, "V2", "5", None, 4, "t", None, None)
-    await insert_report(pg_pool, "V1", "5", None, 2, "t", None, None)
+    # Different token: insert_report now atomically suppresses a same-token
+    # duplicate for the same vehicle inside the 10-minute window.
+    await insert_report(pg_pool, "V1", "5", None, 2, "t2", None, None)
     grouped = await get_reports_by_route(pg_pool, "5")
     assert set(grouped.keys()) == {"V1", "V2"}
     assert len(grouped["V1"]) == 2

@@ -3,7 +3,8 @@
 Provides:
 - Pure decay algorithm (compute_weighted_level / _weight) — no DB dependency
 - Async DB helpers (insert_report, get_recent_reports, check_rate_limit,
-  get_reports_by_route, delete_old_reports)
+  get_reports_by_route, delete_old_reports); insert_report enforces the
+  per-token/vehicle rate-limit window atomically in a single statement
 
 The crowding_reports table is created by Alembic migration 0003 (not here),
 so reports persist in Postgres and are shared across instances.
@@ -116,17 +117,45 @@ async def insert_report(
     user_token: Optional[str],
     lat: Optional[float],
     lon: Optional[float],
-) -> None:
-    """Insert a new crowding report."""
-    await pool.execute(
-        """
-        INSERT INTO crowding_reports
-            (vehicle_id, route_id, trip_id, crowding_level,
-             anonymous_user_token, lat, lon)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        """,
-        vehicle_id, route_id, trip_id, crowding_level, user_token, lat, lon,
-    )
+) -> bool:
+    """Insert a new crowding report, atomically enforcing the rate-limit window.
+
+    The insert and the per-token/vehicle duplicate check run as ONE conditional
+    statement, so concurrent requests cannot race a check-then-insert (TOCTOU).
+    The window matches check_rate_limit's default (10 minutes).
+
+    Returns True if a row was inserted, False if the report was suppressed as a
+    duplicate within the window. Callers may ignore the return value; a raced
+    duplicate simply becomes a silent no-op.
+
+    A transaction-scoped advisory lock on (token, vehicle) serializes truly
+    simultaneous statements: WHERE NOT EXISTS alone is not atomic under READ
+    COMMITTED (two concurrent inserts each see an empty window and both land).
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(coalesce($1, '') || ':' || $2, 0))",
+                user_token, vehicle_id,
+            )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO crowding_reports
+                    (vehicle_id, route_id, trip_id, crowding_level,
+                     anonymous_user_token, lat, lon)
+                SELECT $1, $2, $3, $4, $5, $6, $7
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM   crowding_reports
+                    WHERE  anonymous_user_token = $5
+                      AND  vehicle_id = $1
+                      AND  reported_at > now() - make_interval(mins => 10)
+                )
+                RETURNING 1
+                """,
+                vehicle_id, route_id, trip_id, crowding_level, user_token, lat, lon,
+            )
+    return row is not None
 
 
 async def get_recent_reports(
