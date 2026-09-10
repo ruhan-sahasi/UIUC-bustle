@@ -2,13 +2,15 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic-settings==2.6.1
 httpx==0.28.1
-sentry-sdk[fastapi]
+sentry-sdk[fastapi]==2.54.0
 slowapi==0.1.9
 pytest==8.3.4
 pytest-asyncio==0.25.3
-anthropic>=0.40.0
+anthropic==0.84.0
 PyJWT==2.10.1
 cryptography==48.0.1  # ES256/RS256 JWT verification (Supabase asymmetric signing keys)
 asyncpg==0.30.0
 alembic==1.14.0
 psycopg2-binary==2.9.10
+sqlalchemy==2.0.48
+starlette==0.41.3

@@ -12,10 +12,15 @@ COPY . .
 # load_gtfs.py resolves output path via __file__ → writes to /app/data/gtfs.db
 RUN python scripts/load_gtfs.py
 
+# Run as an unprivileged user
+RUN adduser --system --uid 10001 --home /app --no-create-home appuser \
+  && chown -R appuser /app
+USER appuser
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health')" || exit 1
+  CMD python -c "import urllib.request, os; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health/ready')" || exit 1
 
 EXPOSE 8000
 
 # Railway injects PORT and routes public traffic to it; bind there, default 8000 for local runs
-CMD alembic upgrade head && python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["./entrypoint.sh"]

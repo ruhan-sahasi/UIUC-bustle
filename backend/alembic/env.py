@@ -18,7 +18,7 @@ db_url = _settings.database_url.replace("postgresql+asyncpg://", "postgresql://"
 
 # Guard against empty DATABASE_URL
 if not db_url:
-    sys.exit(0)
+    sys.exit("DATABASE_URL is not set; refusing to skip migrations")
 config.set_main_option("sqlalchemy.url", db_url)
 
 
