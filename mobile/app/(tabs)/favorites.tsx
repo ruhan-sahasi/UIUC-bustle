@@ -10,17 +10,17 @@ import {
   type FavoriteStop,
   type SavedPlace,
 } from "@/src/storage/favorites";
-import { FadeInView, Press, PressableScale, useReducedMotion } from "@/src/components/ui/motion";
+import { FadeInView, Press, PressableScale, Skeleton, useReducedMotion } from "@/src/components/ui/motion";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { Check, MapPin, Plus, Star, Trash2 } from "lucide-react-native";
 import { theme } from "@/src/constants/theme";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -91,7 +91,9 @@ export default function FavoritesScreen() {
   const [stops, setStops] = useState<FavoriteStop[]>([]);
   const [afterLastClassId, setAfterLastClassId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [addingPlace, setAddingPlace] = useState(false);
+  const [savingPlace, setSavingPlace] = useState(false);
   const [newPlaceName, setNewPlaceName] = useState("");
 
   const load = useCallback(async () => {
@@ -106,13 +108,26 @@ export default function FavoritesScreen() {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    load();
+  // Refresh on every focus (not just mount) so a stop starred on Home or Map
+  // is already in the list when the user switches back to this tab.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
   }, [load]);
 
   const addPlaceWithLocation = useCallback(async () => {
     const name = newPlaceName.trim() || "Saved place";
-    setAddingPlace(true);
+    setSavingPlace(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== "granted") {
@@ -127,10 +142,11 @@ export default function FavoritesScreen() {
       });
       setPlaces((prev) => [...prev, place]);
       setNewPlaceName("");
+      setAddingPlace(false);
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not add place.");
     } finally {
-      setAddingPlace(false);
+      setSavingPlace(false);
     }
   }, [newPlaceName]);
 
@@ -151,9 +167,23 @@ export default function FavoritesScreen() {
   }, []);
 
   if (loading) {
+    // Skeleton mirror of the loaded layout: section label + chip row card,
+    // section label + add button, then two favorite cards.
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
+      <View style={styles.screen}>
+        <View style={styles.container} accessibilityLabel="Loading favorites">
+          <Skeleton width={140} height={12} style={styles.skeletonLabel} />
+          <View style={styles.sectionCard}>
+            <View style={styles.afterRow}>
+              <Skeleton width={72} height={theme.layout.tapMin} radius={theme.radius.pill} />
+              <Skeleton width={96} height={theme.layout.tapMin} radius={theme.radius.pill} />
+            </View>
+          </View>
+          <Skeleton width={110} height={12} style={styles.skeletonLabel} />
+          <Skeleton width="100%" height={52} radius={theme.radius.lg} />
+          <Skeleton width="100%" height={104} radius={theme.radius.xl} style={styles.skeletonCard} />
+          <Skeleton width="100%" height={104} radius={theme.radius.xl} style={styles.skeletonCard} />
+        </View>
       </View>
     );
   }
@@ -176,6 +206,9 @@ export default function FavoritesScreen() {
       keyExtractor={(row: FavoriteRow) => row.key}
       // Single column only — `itemLayoutAnimation` is unsupported past one.
       itemLayoutAnimation={reduceMotion ? undefined : ROW_REORDER}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.navy} />
+      }
       ListHeaderComponent={
       <>
       <FadeInView delay={0}>
@@ -210,9 +243,10 @@ export default function FavoritesScreen() {
             <PressableScale
               style={styles.addBtnWrap}
               onPress={addPlaceWithLocation}
-              disabled={addingPlace}
+              disabled={savingPlace}
               accessibilityRole="button"
               accessibilityLabel="Use my location"
+              accessibilityState={{ disabled: savingPlace, busy: savingPlace }}
             >
               <LinearGradient
                 colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
@@ -221,7 +255,7 @@ export default function FavoritesScreen() {
                 style={styles.addBtn}
               >
                 <MapPin size={15} color={theme.colors.surface} strokeWidth={2.2} />
-                <Text style={styles.addBtnText}>Use my location</Text>
+                <Text style={styles.addBtnText}>{savingPlace ? "Saving place…" : "Use my location"}</Text>
               </LinearGradient>
             </PressableScale>
             <PressableScale
@@ -343,7 +377,8 @@ export default function FavoritesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
   container: { padding: theme.layout.gutter, paddingBottom: 40 },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surfaceAlt },
+  skeletonLabel: { marginTop: theme.layout.gutter, marginBottom: theme.spacing.sm, marginLeft: 4 },
+  skeletonCard: { marginTop: theme.layout.cardGap },
   sectionLabel: { ...theme.text.eyebrow, color: theme.colors.textMuted, marginTop: theme.layout.gutter, marginBottom: theme.spacing.sm, marginLeft: 4 },
   hint: { ...theme.text.caption, color: theme.colors.textSecondary, marginBottom: theme.layout.cardGap, marginLeft: 4 },
   sectionCard: { backgroundColor: theme.colors.surface, borderRadius: theme.radius.xl, padding: theme.layout.gutter, ...theme.elevation[2] },
