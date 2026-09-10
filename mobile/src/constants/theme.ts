@@ -166,15 +166,19 @@ export const theme = {
       elevation: 8,
     },
   },
-  /** Motion durations/spring configs shared across animated components. */
+  /**
+   * Motion durations (literal wall-clock ms) shared across animated components,
+   * plus the v2 token vocabulary.
+   *
+   * The legacy `spring` / `springBouncy` configs are gone: their last consumer
+   * (the settings segmented control) moved to `v2.SPRING_D.chip`. Spring physics
+   * now lives only in src/constants/motion.ts, where every config also carries
+   * `reduceMotion`, so a hand-rolled spring cannot silently skip accessibility.
+   */
   motion: {
     fast: 160,
     base: 280,
     slow: 450,
-    /** @deprecated Use `theme.motion.v2.SPRING.press` / `.settle` — see src/constants/motion.ts. */
-    spring: { damping: 16, stiffness: 220, mass: 0.7 },
-    /** @deprecated Use `theme.motion.v2.SPRING.joy` (arrival only) — see src/constants/motion.ts. */
-    springBouncy: { damping: 12, stiffness: 180, mass: 0.8 },
     /**
      * Motion vocabulary v2 — re-exported so screens have one import path
      * (`theme.motion.v2.SPRING.press`) instead of two. Canonical definitions

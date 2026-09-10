@@ -80,19 +80,30 @@ const AnimatedPolyline = Animated.createAnimatedComponent(Polyline);
 // mount a dozen Skeletons; each of them adding its own native listener + state
 // hook is pure overhead, and they would all answer the same question.
 let reduceMotionValue = false;
+// `false` is a guess until AccessibilityInfo answers. Anything that OVERWRITES
+// the OS setting (the root <ReducedMotionConfig>) must wait for this, or it
+// would force motion back on for the very users who asked for less of it.
+let reduceMotionResolved = false;
 let reduceMotionSub: { remove: () => void } | null = null;
 const reduceMotionListeners = new Set<() => void>();
 
 function emitReduceMotion(next: boolean) {
-  if (next === reduceMotionValue) return;
+  // Notify on the first answer even when it matches the guess, so subscribers
+  // waiting on `resolved` are released.
+  const changed = next !== reduceMotionValue || !reduceMotionResolved;
   reduceMotionValue = next;
-  reduceMotionListeners.forEach((l) => l());
+  reduceMotionResolved = true;
+  if (changed) reduceMotionListeners.forEach((l) => l());
 }
 
 function subscribeToReduceMotion(listener: () => void): () => void {
   reduceMotionListeners.add(listener);
   if (reduceMotionListeners.size === 1) {
-    AccessibilityInfo.isReduceMotionEnabled().then(emitReduceMotion).catch(() => {});
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then(emitReduceMotion)
+      // A query that never answers must not strand `resolved` forever; fall
+      // back to the guess rather than blocking the flag indefinitely.
+      .catch(() => emitReduceMotion(reduceMotionValue));
     reduceMotionSub = AccessibilityInfo.addEventListener("reduceMotionChanged", emitReduceMotion);
   }
   return () => {
@@ -108,6 +119,10 @@ function getReduceMotion(): boolean {
   return reduceMotionValue;
 }
 
+function getReduceMotionResolved(): boolean {
+  return reduceMotionResolved;
+}
+
 /**
  * Live "Reduce Motion" system setting. Looping primitives in this file obey
  * it internally; use it yourself before starting any decorative loop.
@@ -118,6 +133,23 @@ function getReduceMotion(): boolean {
  */
 export function useReducedMotion(): boolean {
   return useSyncExternalStore(subscribeToReduceMotion, getReduceMotion, getReduceMotion);
+}
+
+/**
+ * Whether `useReducedMotion()` reflects a real answer from AccessibilityInfo
+ * rather than its optimistic `false` seed.
+ *
+ * Only the root <ReducedMotionConfig> needs this. Until it is true, Reanimated
+ * still holds its own load-time snapshot of the OS setting — which is CORRECT
+ * at startup — so overwriting it with an unresolved guess would briefly restore
+ * full motion for a user who has Reduce Motion switched on.
+ */
+export function useReducedMotionResolved(): boolean {
+  return useSyncExternalStore(
+    subscribeToReduceMotion,
+    getReduceMotionResolved,
+    getReduceMotionResolved,
+  );
 }
 
 // ── Haptics ───────────────────────────────────────────────────────────────

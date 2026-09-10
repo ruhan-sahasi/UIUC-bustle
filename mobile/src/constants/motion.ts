@@ -28,16 +28,38 @@
  * these numbers to `TIMING.*` durations, which are literal wall-clock ms.
  *
  * ── Reduced motion is structural, not conditional ─────────────────────────
- * EVERY config below carries `reduceMotion: ReduceMotion.System`. Reanimated
- * then jumps straight to the target value whenever the OS "Reduce Motion"
- * setting is on. This is deliberate: accessibility degrades by construction,
- * so no screen can regress by forgetting an `if (reduceMotion)` branch.
+ * EVERY config below carries `reduceMotion: ReduceMotion.System`, so Reanimated
+ * jumps straight to the target value whenever its global reduce-motion flag is
+ * set. Accessibility degrades by construction: no screen can regress by
+ * forgetting an `if (reduceMotion)` branch.
+ *
+ * That guarantee holds because `app/_layout.tsx` keeps Reanimated's flag in
+ * sync — NOT because `System` polls the OS. `ReduceMotion.System` is resolved
+ * against `ReducedMotionManager.uiValue`, and that mutable is seeded exactly
+ * once, at module load:
+ *
+ *   // node_modules/react-native-reanimated/lib/module/ReducedMotion.js
+ *   const IS_REDUCED_MOTION_ENABLED_IN_SYSTEM = isReducedMotionEnabledInSystem();
+ *   export const ReducedMotionManager = { uiValue: makeMutable(IS_...), ... };
+ *
+ * Nothing re-reads the OS after that, so on its own `System` would freeze at
+ * whatever the setting was when the bundle loaded. The root layout therefore
+ * mounts ONE `<ReducedMotionConfig>` whose mode is driven by the live,
+ * AccessibilityInfo-backed `useReducedMotion` from
+ * `src/components/ui/motion.tsx`; that is what makes a mid-session toggle take
+ * effect. Two rules follow:
+ *   - Never mount a second `ReducedMotionConfig` anywhere else. Each one
+ *     restores the flag it captured on mount when it unmounts or when its
+ *     `mode` changes, so two of them clobber each other.
+ *   - Never pass `ReduceMotion.System` to `ReducedMotionConfig` — it would just
+ *     re-read the same stale snapshot.
  *
  * Note: Reanimated's own `useReducedMotion()` snapshots the setting at module
  * import and never updates. When a component needs to *read* the flag in JS
  * (to swap copy, skip a haptic, or render a static frame), use the live
  * AccessibilityInfo-backed `useReducedMotion` in `src/components/ui/motion.tsx`.
  */
+import { useSyncExternalStore } from "react";
 import { Easing, ReduceMotion, type WithSpringConfig, type WithTimingConfig } from "react-native-reanimated";
 
 /**
@@ -207,3 +229,50 @@ export const HAPTIC = {
 } as const;
 
 export type HapticKey = keyof typeof HAPTIC;
+
+/**
+ * ── Developer override: "force reduced motion" ────────────────────────────
+ *
+ * Written by the Developer toggle in `app/(tabs)/settings.tsx`, read by
+ * `app/_layout.tsx`, which ORs it with the live system setting to pick the mode
+ * of the app's single `<ReducedMotionConfig>` (see the header note above).
+ *
+ * Why the flag lives here rather than in the settings screen: the root layout is
+ * the one owner of Reanimated's global flag, and it needs both inputs in the
+ * same render. Two `ReducedMotionConfig`s — one per input — fight, because each
+ * restores the value it captured on mount.
+ *
+ * Deliberately NOT persisted: a debug switch that survives a restart is a debug
+ * switch someone forgets is on. Deliberately not a new state library either —
+ * this is the same `useSyncExternalStore` shape `useReducedMotion` already uses
+ * in `src/components/ui/motion.tsx`.
+ */
+let devForcedReducedMotion = false;
+const devForcedListeners = new Set<() => void>();
+
+function subscribeDevForcedReducedMotion(listener: () => void): () => void {
+  devForcedListeners.add(listener);
+  return () => {
+    devForcedListeners.delete(listener);
+  };
+}
+
+function getDevForcedReducedMotion(): boolean {
+  return devForcedReducedMotion;
+}
+
+/** Flip the developer override. No-op in release builds. */
+export function setDevForcedReducedMotion(next: boolean): void {
+  if (!__DEV__ || next === devForcedReducedMotion) return;
+  devForcedReducedMotion = next;
+  devForcedListeners.forEach((listener) => listener());
+}
+
+/** Live value of the developer override. Always `false` in release builds. */
+export function useDevForcedReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribeDevForcedReducedMotion,
+    getDevForcedReducedMotion,
+    getDevForcedReducedMotion
+  );
+}
