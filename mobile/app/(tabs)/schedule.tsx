@@ -1,4 +1,3 @@
-import * as Haptics from 'expo-haptics';
 import {
   fetchPlaceDetails,
 } from "@/src/api/client";
@@ -10,10 +9,10 @@ import type { AutocompleteResult } from "@/src/api/client";
 import type { Building, ScheduleClass } from "@/src/api/types";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { theme } from "@/src/constants/theme";
-import { FadeInView, Press, PressableScale, Skeleton, useReducedMotion } from "@/src/components/ui/motion";
+import { FadeInView, fireHaptic, Press, PressableScale, Skeleton, useReducedMotion } from "@/src/components/ui/motion";
 import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
-import { Bell, BellOff, CalendarDays, Clock, MapPin, Pencil, Plus, Trash2 } from "lucide-react-native";
+import { Bell, BellOff, CalendarDays, Clock, CloudOff, MapPin, Pencil, Plus, Trash2 } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useAnalytics } from "@/src/hooks/useAnalytics";
@@ -100,11 +99,10 @@ export default function ScheduleScreen() {
   const { capture } = useAnalytics();
   const reduceMotion = useReducedMotion();
 
-  const { data: classesData, isLoading, refetch: refetchClasses } = useClasses();
+  const { data: classesData, isLoading, isError, isRefetching, refetch: refetchClasses } = useClasses();
   const { data: buildingsData } = useBuildings();
   const classes = classesData?.classes ?? [];
   const buildings = buildingsData?.buildings ?? [];
-  const refreshing = false; // TQ handles background refresh; keep for RefreshControl compat
 
   const { mutate: deleteClassMutation } = useDeleteClass();
   const { mutate: createClassMutation } = useCreateClass();
@@ -329,7 +327,7 @@ export default function ScheduleScreen() {
       updateClassMutation({ classId: editingClass.class_id, updates }, {
         onSuccess: () => {
           resetForm();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          fireHaptic("arrive");
           capture("class_edited", { class_id: editingClass.class_id });
           setSuccessToast("Class saved ✓");
           setTimeout(() => setSuccessToast(null), 2500);
@@ -355,7 +353,7 @@ export default function ScheduleScreen() {
     createClassMutation(body, {
       onSuccess: () => {
         resetForm();
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        fireHaptic("arrive");
         capture("class_added", {
           has_building: false,  // schedule.tsx only uses custom destinations (destination_lat/lng)
           has_custom_dest: locationLat !== null && locationLng !== null,
@@ -620,7 +618,7 @@ export default function ScheduleScreen() {
       itemLayoutAnimation={reduceMotion ? undefined : CARD_REORDER}
       contentContainerStyle={styles.container}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => { refetchClasses(); }} tintColor={theme.colors.navy} />
+        <RefreshControl refreshing={isRefetching} onRefresh={() => { refetchClasses(); }} tintColor={theme.colors.navy} />
       }
       ListHeaderComponent={
       <>
@@ -693,7 +691,17 @@ export default function ScheduleScreen() {
       }
       ListEmptyComponent={
         <View style={styles.emptyCard}>
-          {viewMode === "week" && selectedWeekDay ? (
+          {isError ? (
+            // A failed fetch must never masquerade as a blank schedule — a
+            // student could re-enter their whole semester over a dropped
+            // connection.
+            <EmptyState
+              icon={CloudOff}
+              title="Couldn't load your schedule"
+              subtitle="Check your connection and try again."
+              action={{ label: "Retry", onPress: () => { refetchClasses(); } }}
+            />
+          ) : viewMode === "week" && selectedWeekDay ? (
             <EmptyState
               icon={CalendarDays}
               title={`No classes on ${DAY_LABELS[selectedWeekDay]}`}
