@@ -24,18 +24,18 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { useSharedValue, withTiming } from "react-native-reanimated";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from "react-native-maps";
 import { LinearGradient } from "expo-linear-gradient";
 import { theme } from "@/src/constants/theme";
-import { STAGGER, TIMING } from "@/src/constants/motion";
+import { STAGGER } from "@/src/constants/motion";
 import { FadeInView, PressableScale, Skeleton, Stagger } from "@/src/components/ui/motion";
 import { VehicleMarker, vehicleMarkerKey } from "@/src/components/map";
 import { Sheet, type SheetExternalGesture } from "@/src/components/ui/Sheet";
 import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 import { DepartureRow } from "@/src/components/ui/DepartureRow";
-import { Bus, Footprints, MapPin, Search, X } from "lucide-react-native";
+import { EmptyState } from "@/src/components/ui/EmptyState";
+import { Bus, CloudOff, Footprints, MapPin, Search, X } from "lucide-react-native";
 
 /** Live vehicles chip — the shared Badge pairs its breathing dot with text and respects reduce-motion. */
 function MapLiveBadge({ count }: { count: number }) {
@@ -110,9 +110,11 @@ export default function MapScreen() {
   const [selectedStop, setSelectedStop] = useState<StopWithDistance | null>(null);
   const [useUiucArea, setUseUiucArea] = useState(false);
 
-  // TanStack Query: vehicles (15s polling)
+  // TanStack Query: vehicles (15s polling). Query data is structurally
+  // shared, so `vehiclesData` keeps its identity across no-change polls and
+  // this memo (unlike a bare `?? []`) does too.
   const { data: vehiclesData } = useVehicles();
-  const vehicles = vehiclesData?.vehicles ?? [];
+  const vehicles = useMemo(() => vehiclesData?.vehicles ?? [], [vehiclesData]);
 
   // TanStack Query: nearby stops (reactive on location)
   const { data: nearbyStopsData } = useNearbyStops(
@@ -120,15 +122,24 @@ export default function MapScreen() {
     location?.lng ?? 0,
     { enabled: !!location && status === "ready" }
   );
-  const stops: StopWithDistance[] = (nearbyStopsData?.stops ?? [])
-    .map((s) => ({
-      ...s,
-      distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
-    }))
-    .sort((a, b) => a.distance_m - b.distance_m);
+  const stops: StopWithDistance[] = useMemo(
+    () =>
+      (nearbyStopsData?.stops ?? [])
+        .map((s) => ({
+          ...s,
+          distance_m: Math.round(haversineMeters(location?.lat ?? 0, location?.lng ?? 0, s.lat, s.lng)),
+        }))
+        .sort((a, b) => a.distance_m - b.distance_m),
+    [nearbyStopsData, location]
+  );
 
   // TanStack Query: departures for selected stop
-  const { data: departuresData, isLoading: departuresLoading } = useDepartures(
+  const {
+    data: departuresData,
+    isLoading: departuresLoading,
+    isError: departuresError,
+    refetch: refetchDepartures,
+  } = useDepartures(
     selectedStop?.stop_id ?? "",
     { enabled: !!selectedStop }
   );
@@ -140,6 +151,9 @@ export default function MapScreen() {
   const [selectedPlace, setSelectedPlace] = useState<{ lat: number; lng: number; name: string; building_id?: string } | null>(null);
   const [placeRoutes, setPlaceRoutes] = useState<RecommendationOption[]>([]);
   const [placeRoutesLoading, setPlaceRoutesLoading] = useState(false);
+  const [routesError, setRoutesError] = useState(false);
+  // Bumped by the Retry button to re-run the routes fetch effect.
+  const [routesAttempt, setRoutesAttempt] = useState(0);
   const [selectedRouteIdx, setSelectedRouteIdx] = useState(0);
   type LatLng = { latitude: number; longitude: number };
   const [walkPolylines, setWalkPolylines] = useState<LatLng[][]>([]);
@@ -147,23 +161,6 @@ export default function MapScreen() {
 
   const [vehicleCrowding, setVehicleCrowding] = useState<Record<string, CrowdingInfo>>({});
   const [crowdingSheet, setCrowdingSheet] = useState<{ vehicleId: string; routeId: string } | null>(null);
-
-  const [showEmptyState, setShowEmptyState] = useState(true);
-  // Was two hand-picked RN Animated durations (300 out / 200 in). Now one
-  // token: `TIMING.base` is the app's default crossfade curve and carries
-  // `ReduceMotion.System`, so the fade collapses to a cut when the OS asks for
-  // reduced motion instead of relying on this screen to remember.
-  const emptyStateOpacity = useSharedValue(1);
-
-  const fadeOutEmptyState = useCallback(() => {
-    setShowEmptyState(false);
-    emptyStateOpacity.value = withTiming(0, TIMING.base);
-  }, [emptyStateOpacity]);
-
-  const fadeInEmptyState = useCallback(() => {
-    setShowEmptyState(true);
-    emptyStateOpacity.value = withTiming(1, TIMING.base);
-  }, [emptyStateOpacity]);
 
   const mapRef = useRef<MapView | null>(null);
   const currentRegionRef = useRef({
@@ -258,11 +255,12 @@ export default function MapScreen() {
     return () => clearTimeout(timer);
   }, [mapSearch, apiBaseUrl, apiKey]);
 
-  // Fetch routes when a place is selected
+  // Fetch routes when a place is selected (or Retry bumps `routesAttempt`)
   useEffect(() => {
     if (!selectedPlace || !location) return;
     setPlaceRoutesLoading(true);
     setPlaceRoutes([]);
+    setRoutesError(false);
     const arriveBy = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     (async () => {
       try {
@@ -280,11 +278,16 @@ export default function MapScreen() {
         setPlaceRoutes(rec.options ?? []);
       } catch {
         setPlaceRoutes([]);
+        setRoutesError(true);
       } finally {
         setPlaceRoutesLoading(false);
       }
     })();
-  }, [selectedPlace, location, apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes]);
+  }, [selectedPlace, location, apiBaseUrl, apiKey, walkingSpeedMps, bufferMinutes, routesAttempt]);
+
+  const retryPlaceRoutes = useCallback(() => {
+    setRoutesAttempt((a) => a + 1);
+  }, []);
 
   // Reset route index when fresh routes arrive
   useEffect(() => {
@@ -410,31 +413,11 @@ export default function MapScreen() {
     return () => { cancelled = true; };
   }, [placeRoutes, selectedRouteIdx, location, selectedPlace, apiBaseUrl, apiKey]);
 
-  useEffect(() => {
-    if (!vehicles.length || !apiBaseUrl) return;
-    let cancelled = false;
-    async function pollCrowding() {
-      const updates: Record<string, CrowdingInfo> = {};
-      await Promise.all(
-        vehicles.map(async (v) => {
-          const info = await fetchCrowding(apiBaseUrl, v.vehicle_id, v.route_id, { apiKey: apiKey ?? undefined });
-          if (info) updates[v.vehicle_id] = info;
-        })
-      );
-      if (!cancelled) setVehicleCrowding((prev) => ({ ...prev, ...updates }));
-    }
-    pollCrowding();
-    const id = setInterval(pollCrowding, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles.map(v => v.vehicle_id).join(","), apiBaseUrl, apiKey]);
-
   const onSelectSuggestion = useCallback(async (result: AutocompleteResult) => {
     Keyboard.dismiss();
     setMapSearch(result.name);
     setSuggestions([]);
     setSelectedStop(null);
-    fadeOutEmptyState();
 
     let lat = result.lat;
     let lng = result.lng;
@@ -461,18 +444,18 @@ export default function MapScreen() {
       latitudeDelta: INITIAL_DELTA,
       longitudeDelta: INITIAL_DELTA,
     }, 500);
-  }, [apiBaseUrl, apiKey, fadeOutEmptyState]);
+  }, [apiBaseUrl, apiKey]);
 
   const clearSearch = useCallback(() => {
     setMapSearch("");
     setSuggestions([]);
     setSelectedPlace(null);
     setPlaceRoutes([]);
+    setRoutesError(false);
     setWalkPolylines([]);
     setBusPolylines([]);
     setSelectedRouteIdx(0);
-    fadeInEmptyState();
-  }, [fadeInEmptyState]);
+  }, []);
 
   const onStartNavigation = useCallback((opt: RecommendationOption) => {
     if (!selectedPlace) return;
@@ -566,6 +549,74 @@ export default function MapScreen() {
     if (visible.length > GLIDE_BUDGET) visible.sort((a, b) => a.d2 - b.d2);
     return new Set(visible.slice(0, GLIDE_BUDGET).map((v) => v.id));
   }, [vehicles]);
+
+  // A stable fingerprint of the gliding set's MEMBERSHIP. The Set above gets a
+  // new identity every 15s vehicle poll (positions moved); this string only
+  // changes when a bus actually enters or leaves the capped set, so the
+  // crowding effect below restarts (and re-polls immediately) exactly then.
+  const glidingIdsKey = useMemo(
+    () => Array.from(glidingVehicleIds).sort().join(","),
+    [glidingVehicleIds]
+  );
+
+  // ── Crowding poll, bounded to the gliding/visible capped set ────────────
+  // Previously this fired one fetchCrowding per vehicle for the WHOLE fleet
+  // every 30s. Now it polls only the ≤GLIDE_BUDGET buses the user can see —
+  // the only ones whose crowding ring is on screen. Entries for buses that
+  // drift out of the set keep their last-known value (same as before, when a
+  // vehicle left the feed).
+  useEffect(() => {
+    if (!glidingIdsKey || !apiBaseUrl) return;
+    let cancelled = false;
+    async function pollCrowding() {
+      const targets = vehicles.filter((v) => glidingVehicleIds.has(v.vehicle_id));
+      if (!targets.length) return;
+      const updates: Record<string, CrowdingInfo> = {};
+      await Promise.all(
+        targets.map(async (v) => {
+          const info = await fetchCrowding(apiBaseUrl, v.vehicle_id, v.route_id, { apiKey: apiKey ?? undefined });
+          if (info) updates[v.vehicle_id] = info;
+        })
+      );
+      if (cancelled) return;
+      // Identity-stable write: a no-op poll (same level + source per vehicle)
+      // returns `prev` untouched, and an unchanged entry keeps its previous
+      // object, so `VehicleMarker`'s memo (and `vehicleMarkerKey`) survive.
+      setVehicleCrowding((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [id, info] of Object.entries(updates)) {
+          const old = prev[id];
+          if (old && old.level === info.level && old.source === info.source) continue;
+          next[id] = info;
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }
+    pollCrowding();
+    const id = setInterval(pollCrowding, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+    // `vehicles`/`glidingVehicleIds` are read through the closure on purpose:
+    // membership is what matters, and `glidingIdsKey` restarts the effect
+    // whenever that changes. route_id staleness between restarts matches the
+    // previous id-joined dependency exactly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [glidingIdsKey, apiBaseUrl, apiKey]);
+
+  // Per-stop coordinate objects and onPress handlers, hoisted out of the
+  // marker JSX so a re-render of the screen hands every <Marker> the same
+  // props it had last time.
+  const stopMarkers = useMemo(
+    () =>
+      stops.map((stop) => ({
+        stop,
+        coordinate: { latitude: stop.lat, longitude: stop.lng },
+        distanceLabel: `${formatDistance(stop.distance_m)} away`,
+        onPress: () => onMarkerPress(stop),
+      })),
+    [stops, onMarkerPress]
+  );
 
   // ── Stop sheet detent ───────────────────────────────────────────────────
   // The sheet is mounted for the life of the screen and driven by `index`;
@@ -679,6 +730,9 @@ export default function MapScreen() {
   }
   const sheetStop = selectedStop ?? lastStopRef.current;
   const sheetDepartures = selectedStop ? departures : lastDeparturesRef.current;
+  // Only surface the query error while a stop is actually selected; a closing
+  // sheet keeps showing its latched contents, never a late-arriving error.
+  const sheetDeparturesError = !!selectedStop && departuresError;
 
   const mapCenter = location ?? UIUC_FALLBACK;
   const initialRegion = {
@@ -700,7 +754,7 @@ export default function MapScreen() {
         onPress={() => { Keyboard.dismiss(); setSuggestions([]); }}
         onRegionChangeComplete={(r) => { currentRegionRef.current = r; }}
       >
-        {stops.map((stop) => {
+        {stopMarkers.map(({ stop, coordinate, distanceLabel, onPress }) => {
           const isSelected = selectedStop?.stop_id === stop.stop_id;
           return (
             <Marker
@@ -710,13 +764,13 @@ export default function MapScreen() {
               key={`stop-${stop.stop_id}-${isSelected ? "selected" : "idle"}`}
               tracksViewChanges={false}
               anchor={{ x: 0.5, y: 0.5 }}
-              coordinate={{ latitude: stop.lat, longitude: stop.lng }}
+              coordinate={coordinate}
               title={stop.stop_name}
-              description={`${formatDistance(stop.distance_m)} away`}
-              onPress={() => onMarkerPress(stop)}
+              description={distanceLabel}
+              onPress={onPress}
               accessible
               accessibilityRole="button"
-              accessibilityLabel={`Bus stop ${stop.stop_name}, ${formatDistance(stop.distance_m)} away${isSelected ? ", selected" : ""}`}
+              accessibilityLabel={`Bus stop ${stop.stop_name}, ${distanceLabel}${isSelected ? ", selected" : ""}`}
             >
               <StopDot selected={isSelected} />
             </Marker>
@@ -844,7 +898,7 @@ export default function MapScreen() {
             placeholder="Search restaurants, buildings, places..."
             placeholderTextColor={theme.colors.textMuted}
             value={mapSearch}
-            onChangeText={(text) => { setMapSearch(text); if (text.length > 0) fadeOutEmptyState(); else fadeInEmptyState(); }}
+            onChangeText={setMapSearch}
             returnKeyType="search"
             autoCorrect={false}
           />
@@ -935,9 +989,22 @@ export default function MapScreen() {
               <Skeleton height={64} radius={theme.radius.lg} />
               <Skeleton height={64} radius={theme.radius.lg} />
             </View>
+          ) : routesError ? (
+            // Same scroll container as the list: the panel caps at 300pt, and
+            // EmptyState's tall padding could push Retry past that cap on
+            // small screens — inside the ScrollView it stays reachable.
+            <ScrollView style={styles.routeList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+              <EmptyState
+                icon={CloudOff}
+                title="Couldn't load routes"
+                subtitle="We couldn't reach the server. Check your connection and try again."
+                action={{ label: "Retry", onPress: retryPlaceRoutes }}
+              />
+            </ScrollView>
           ) : placeRoutes.length > 0 ? (
             <ScrollView style={styles.routeList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-              {placeRoutes.map((opt, i) => {
+              <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={10}>
+                {placeRoutes.map((opt, i) => {
                 const optionLabel = opt.type === "WALK" ? "Walk" : i === 0 ? "Best option" : "Alternative";
                 const optionMeta =
                   opt.type === "WALK"
@@ -946,8 +1013,8 @@ export default function MapScreen() {
                     ? `Leave now · ${opt.eta_minutes} min total`
                     : `Leave in ${opt.depart_in_minutes} min · ${opt.eta_minutes} min total`;
                 return (
-                  <FadeInView key={i} delay={i * 60} dy={10}>
                     <Pressable
+                      key={i}
                       style={[styles.routeRow, selectedRouteIdx === i && styles.routeRowSelected]}
                       onPress={() => setSelectedRouteIdx(i)}
                       accessibilityRole="button"
@@ -991,9 +1058,9 @@ export default function MapScreen() {
                         </LinearGradient>
                       </PressableScale>
                     </Pressable>
-                  </FadeInView>
                 );
               })}
+              </Stagger>
             </ScrollView>
           ) : (
             <Text style={styles.depEmpty}>No routes available right now.</Text>
@@ -1043,6 +1110,13 @@ export default function MapScreen() {
                 <Skeleton height={44} radius={theme.radius.md} />
                 <Skeleton height={44} radius={theme.radius.md} />
               </View>
+            ) : sheetDeparturesError ? (
+              <EmptyState
+                icon={CloudOff}
+                title="Couldn't load departures"
+                subtitle="We couldn't reach the server. Check your connection and try again."
+                action={{ label: "Retry", onPress: () => { refetchDepartures(); } }}
+              />
             ) : sheetDepartures.length > 0 ? (
               <ScrollView style={styles.depList} nestedScrollEnabled showsVerticalScrollIndicator={false}>
                 {/* `Stagger` replaces the hand-written `delay={i * 45}`: it caps
