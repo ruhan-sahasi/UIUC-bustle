@@ -11,11 +11,74 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
+
+# --- Privacy limits for prompt content sent to the Anthropic API ---
+# Coordinates are rounded to 3 decimal places (~110 m) — plenty of precision
+# for bus recommendations without transmitting an exact position. Free-text
+# fields are capped so unbounded client input cannot flow to a third party
+# (and cannot balloon token spend).
+COORD_DECIMALS = 3
+MAX_FREETEXT_CHARS = 500
+MAX_NAME_CHARS = 100
+MAX_MODE_CHARS = 50
+
+# A "lat,lng"-looking pair. Rewritten only when at least one side carries
+# excess precision (4+ decimal places), so ordinary short numbers and
+# already-rounded pairs pass through byte-identical.
+_COORD_PAIR_RE = re.compile(r"(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")
+
+
+def _round_coord_pairs(text: str) -> str:
+    """Round any 'lat,lng' pairs embedded in text to COORD_DECIMALS places."""
+
+    def _repl(m: re.Match[str]) -> str:
+        # A pair leaks even when only one side is over-precise (e.g. a pin
+        # snapped to a grid on one axis: "40.1092345,-88.22").
+        if all(
+            len(g.split(".", 1)[1]) <= COORD_DECIMALS
+            for g in (m.group(1), m.group(2))
+        ):
+            return m.group(0)
+        return (
+            f"{float(m.group(1)):.{COORD_DECIMALS}f},"
+            f"{float(m.group(2)):.{COORD_DECIMALS}f}"
+        )
+
+    return _COORD_PAIR_RE.sub(_repl, text)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Hard-cap a free-text field before it is interpolated into a prompt."""
+    return text if len(text) <= limit else text[:limit]
+
+
+# Activity entries arrive from the client as arbitrary dicts. Only the fields
+# the fitness-report prompt actually needs are forwarded; everything else
+# (ids, dates, origin location, unknown keys) stays out of the API call.
+_EOD_NUMERIC_FIELDS = ("distanceM", "stepCount", "durationSeconds", "caloriesBurned")
+
+
+def _sanitize_activity_entry(entry: dict) -> dict:
+    out: dict[str, Any] = {}
+    mode = entry.get("walkingModeId") or entry.get("mode")
+    if isinstance(mode, str) and mode:
+        out["mode"] = _truncate(mode, MAX_MODE_CHARS)
+    for key in _EOD_NUMERIC_FIELDS:
+        val = entry.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            out[key] = round(val, 1)
+    dest = entry.get("to")
+    if isinstance(dest, str) and dest:
+        # Round before truncating so a cap can never slice a coordinate
+        # pair mid-number and leave full precision behind.
+        out["to"] = _truncate(_round_coord_pairs(dest), MAX_NAME_CHARS)
+    return out
 
 # These calls are one-shot generations of at most 512 tokens and sit on a
 # user-facing request path. The SDK default is a 600s read timeout with 2
@@ -134,8 +197,12 @@ class ClaudeClient:
             "ranked_order must be a permutation of every option index, each used exactly once. "
             "Keep ai_explanation under 100 chars."
         )
+        # Privacy: origin arrives as a raw "lat,lng" string from the caller;
+        # round it (and any coordinates in a custom destination name) before
+        # it leaves for the API. destination_name is unbounded client text.
         user = (
-            f"Origin: {origin}\nDestination: {destination}\n"
+            f"Origin: {_round_coord_pairs(origin)}\n"
+            f"Destination: {_truncate(_round_coord_pairs(destination), MAX_NAME_CHARS)}\n"
             f"Context: {json.dumps(user_context)}\n"
             f"Options:\n{json.dumps(route_options, indent=2)}"
         )
@@ -183,6 +250,9 @@ class ClaudeClient:
             "Respond ONLY with valid JSON: "
             "{\"narrative\": \"...\", \"destination_sequence\": [{\"dest\": \"...\", \"options\": []}]}."
         )
+        # Privacy: cap the free-text plan here as well as at the API layer, so
+        # this builder is safe regardless of what a caller passes.
+        freetext_plan = _truncate(freetext_plan, MAX_FREETEXT_CHARS)
         user = (
             f"Student's plan: \"{freetext_plan}\"\n"
             f"Classes completed today: {json.dumps(completed_classes)}\n"
@@ -222,10 +292,14 @@ class ClaudeClient:
         steps = total_stats.get("steps", 0)
         calories = total_stats.get("calories", 0)
         distance_m = total_stats.get("distance_m", 0)
+        # Privacy: entries are arbitrary client dicts (ids, dates, origin
+        # place names, anything). Forward only the whitelisted activity
+        # fields the coaching prompt actually uses.
+        walks = [_sanitize_activity_entry(e) for e in activity_entries[:5] if isinstance(e, dict)]
         user = (
             f"Today's activity: {len(activity_entries)} walks, "
             f"{steps} steps, {calories:.0f} kcal burned, {distance_m:.0f} m walked.\n"
-            f"Walks: {json.dumps(activity_entries[:5])}"
+            f"Walks: {json.dumps(walks)}"
         )
         try:
             raw = self._ask(system, user, max_tokens=400)
@@ -256,9 +330,12 @@ class ClaudeClient:
             "Give a single short encouraging sentence (under 80 chars) after a student completes a walk. "
             "Respond with just the sentence, no quotes."
         )
+        # Privacy: dest_name is client text and may be a raw "lat,lng" label
+        # for a custom pin; cap it and round any embedded coordinates.
+        safe_dest = _truncate(_round_coord_pairs(dest_name), MAX_NAME_CHARS)
         user = (
-            f"Student completed a {mode} walk of {distance_m:.0f} m to {dest_name}, "
-            f"burning {calories:.1f} kcal."
+            f"Student completed a {_truncate(mode, MAX_MODE_CHARS)} walk of "
+            f"{distance_m:.0f} m to {safe_dest}, burning {calories:.1f} kcal."
         )
         try:
             return self._ask(system, user, max_tokens=60).strip()
