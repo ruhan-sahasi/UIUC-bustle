@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '@/src/constants/theme';
-import { Clock, Footprints, MapPin, Navigation, Wind, Zap } from 'lucide-react-native';
+import { AlertTriangle, Clock, Footprints, MapPin, Navigation, Wind, Zap } from 'lucide-react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { formatDistance } from '@/src/utils/distance';
 import { Button } from '@/src/components/ui/Button';
@@ -49,19 +49,8 @@ export default function RunningLateScreen() {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [catchableBuses, setCatchableBuses] = useState<CatchableBus[]>([]);
   const [loading, setLoading] = useState(true);
-  const [secondsNow, setSecondsNow] = useState(Date.now());
+  const [loadError, setLoadError] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Live 1-second tick for countdown display
-  useEffect(() => {
-    tickRef.current = setInterval(() => {
-      setSecondsNow(Date.now());
-    }, 1000);
-    return () => {
-      if (tickRef.current) clearInterval(tickRef.current);
-    };
-  }, []);
 
   const fetchCatchableBuses = async (loc: { lat: number; lng: number }) => {
     try {
@@ -120,8 +109,12 @@ export default function RunningLateScreen() {
 
       const allBuses = busesNested.flat().sort((a, b) => a.departsInMins - b.departsInMins);
       setCatchableBuses(allBuses);
+      setLoadError(false);
     } catch {
-      setCatchableBuses([]);
+      // A failed request is NOT "no buses" — keep any list we already have and
+      // flag the failure so the UI can say so honestly instead of telling a
+      // sprinting student to give up.
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -154,6 +147,12 @@ export default function RunningLateScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, apiKey]);
+
+  const onRetry = () => {
+    if (!location) return;
+    setLoading(true);
+    fetchCatchableBuses(location);
+  };
 
   const onNavigateToStop = (bus: CatchableBus) => {
     router.push({
@@ -208,8 +207,19 @@ export default function RunningLateScreen() {
         />
       )}
 
-      {/* Nothing catchable */}
-      {!loading && location != null && catchableBuses.length === 0 && (
+      {/* Request failed and we have nothing to show — an honest error, not
+          "no buses". The 20s poll also recovers on its own. */}
+      {!loading && location != null && loadError && catchableBuses.length === 0 && (
+        <EmptyState
+          icon={AlertTriangle}
+          title="Couldn't check departures"
+          subtitle="We couldn't reach the bus service, so we don't know what's catchable. Check your connection and retry."
+          action={{ label: 'Retry', onPress: onRetry }}
+        />
+      )}
+
+      {/* Nothing catchable — only claimed when the request actually succeeded */}
+      {!loading && location != null && !loadError && catchableBuses.length === 0 && (
         <EmptyState
           icon={Clock}
           title="No catchable buses right now"

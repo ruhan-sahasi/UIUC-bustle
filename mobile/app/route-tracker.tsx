@@ -302,10 +302,16 @@ export default function RouteTrackerScreen() {
           action={{ label: "Retry", onPress: onRefresh }}
         />
       ) : stops.length === 0 ? (
+        /*
+          Dev note: an empty (but successful) stop list usually means the
+          backend hasn't ingested GTFS yet — run backend/scripts/load_gtfs.py and the
+          list appears. That is a server-side fix; the copy below stays
+          student-actionable.
+        */
         <EmptyState
           icon={MapPinOff}
           title="No stop data for this route"
-          subtitle="GTFS data may not be loaded yet. Run the load_gtfs.py script, then pull to refresh."
+          subtitle="We don't have the stop list for this route yet. Pull down to refresh, or view it on the Map."
         />
       ) : (
         <StopTimeline stops={stops} vehicles={vehicles} />
