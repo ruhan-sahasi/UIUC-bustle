@@ -55,6 +55,7 @@ import Animated, {
   interpolateColor,
   runOnJS,
   useAnimatedProps,
+  useAnimatedReaction,
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useDerivedValue,
@@ -701,6 +702,13 @@ interface RouteProgressProps {
  * An SVG polyline that draws itself (strokeDashoffset), with an optional dot
  * traveling the path — a bus gliding along its route. Under reduced motion the
  * line renders fully drawn with the dot resting at the end.
+ *
+ * The track, the drawing line, and the traveling dot are three absolutely
+ * stacked `<Svg>`s of identical geometry (the same layering Charts.tsx's
+ * gauge uses): on Fabric, ANY animated prop write invalidates the WHOLE
+ * enclosing `<Svg>`, so the line and the dot sharing one document would
+ * re-render each other — and the static track — on every frame, forever on
+ * a looping instance.
  */
 export function RouteProgress({
   points,
@@ -776,9 +784,14 @@ export function RouteProgress({
   if (points.length < 2) return null;
 
   return (
-    <View style={style}>
-      <Svg width={geometry.width} height={geometry.height}>
-        {trackColor && (
+    <View style={[{ width: geometry.width, height: geometry.height }, style]}>
+      {trackColor && (
+        <Svg
+          width={geometry.width}
+          height={geometry.height}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        >
           <Polyline
             points={geometry.svgPoints}
             stroke={trackColor}
@@ -787,7 +800,14 @@ export function RouteProgress({
             strokeLinejoin="round"
             fill="none"
           />
-        )}
+        </Svg>
+      )}
+      <Svg
+        width={geometry.width}
+        height={geometry.height}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      >
         <AnimatedPolyline
           points={geometry.svgPoints}
           stroke={color}
@@ -798,8 +818,17 @@ export function RouteProgress({
           strokeDasharray={`${geometry.total} ${geometry.total}`}
           animatedProps={lineProps}
         />
-        {showDot && <AnimatedCircle r={dotRadius} fill={dotColor} animatedProps={dotProps} />}
       </Svg>
+      {showDot && (
+        <Svg
+          width={geometry.width}
+          height={geometry.height}
+          style={StyleSheet.absoluteFill}
+          pointerEvents="none"
+        >
+          <AnimatedCircle r={dotRadius} fill={dotColor} animatedProps={dotProps} />
+        </Svg>
+      )}
     </View>
   );
 }
@@ -1150,9 +1179,9 @@ export function Beacon({ size, color = theme.colors.orange, period = 6000, activ
 
 // ── Odometer ──────────────────────────────────────────────────────────────
 
-// 11 cells: 0..9 then 0 again, so 9 -> 0 rolls FORWARD off the bottom instead
-// of spinning ten digits backwards.
-const ODOMETER_CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+// One cell per digit. Wraps (9 -> 0, 0 -> 9) SNAP rather than roll — see
+// DigitColumn — so the strip needs no extra cell to roll onto.
+const ODOMETER_CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 interface DigitColumnProps {
   v: SharedValue<number>;
@@ -1165,19 +1194,36 @@ interface DigitColumnProps {
 }
 
 const DigitColumn = React.memo(function DigitColumn({ v, place, h, textStyle, padWithZeros }: DigitColumnProps) {
+  // The column's y offset, retargeted per digit change. The previous digit is
+  // tracked (useAnimatedReaction hands it over) so only an ADJACENT step rolls:
+  // a wrap (9 -> 0, or 0 -> 9 on a countdown) or any jump SNAPS to its target.
+  // Tweening a wrap would slide the strip through every intermediate digit —
+  // 9 -> 0 read as a full backwards spin through 8, 7, 6...
+  const y = useSharedValue(0);
+
+  useAnimatedReaction(
+    () => {
+      const pow = Math.pow(10, place);
+      return Math.floor(Math.max(v.value, 0) / pow) % 10;
+    },
+    (digit, previous) => {
+      const target = -digit * h;
+      if (previous === null || Math.abs(digit - previous) !== 1) {
+        y.value = target;
+      } else {
+        y.value = withTiming(target, TIMING.base);
+      }
+    },
+    [place, h]
+  );
+
   const animatedStyle = useAnimatedStyle(() => {
     const pow = Math.pow(10, place);
-    const value = Math.max(v.value, 0);
-    const digit = Math.floor(value / pow) % 10;
-    // Animate the column to its target digit. The previous implementation
-    // derived the roll from the fractional part of value/pow, which is
-    // identically 0 for the integer sources this is built for (a 1s countdown
-    // ticker, a step count) — so it snapped and never rolled.
     return {
-      opacity: padWithZeros || place === 0 || value >= pow ? 1 : 0,
-      transform: [{ translateY: withTiming(-digit * h, TIMING.base) }],
+      opacity: padWithZeros || place === 0 || Math.max(v.value, 0) >= pow ? 1 : 0,
+      transform: [{ translateY: y.value }],
     };
-  }, [place, h, padWithZeros]);
+  }, [place, padWithZeros]);
 
   return (
     <View style={{ height: h, overflow: "hidden" }}>
