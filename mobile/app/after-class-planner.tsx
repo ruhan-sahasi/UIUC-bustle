@@ -17,8 +17,9 @@ import {
 import { theme } from "@/src/constants/theme";
 import { STAGGER } from "@/src/constants/motion";
 import { FadeInView, Press, Skeleton, Stagger } from "@/src/components/ui/motion";
+import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
-import { Bus, Footprints, Heart, Sparkles } from "lucide-react-native";
+import { Bus, Footprints, Heart, MapPinOff, Sparkles } from "lucide-react-native";
 
 const PRESET_CHIPS = ["Home", "Gym", "Library", "Groceries"];
 
@@ -33,6 +34,9 @@ export default function AfterClassPlannerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<{ dest: string; options: RecommendationOption[] }[]>([]);
   const [narrative, setNarrative] = useState<string | null>(null);
+  // True once a plan request has completed successfully, so an empty response
+  // renders a terminal "no plan" state instead of leaving the region blank.
+  const [requested, setRequested] = useState(false);
 
   useEffect(() => {
     getFavoritePlaces().then((places) => setFavorites(places));
@@ -45,6 +49,7 @@ export default function AfterClassPlannerScreen() {
     setError(null);
     setResults([]);
     setNarrative(null);
+    setRequested(false);
     try {
       const { status: perm } = await Location.requestForegroundPermissionsAsync();
       if (perm !== "granted") {
@@ -75,6 +80,7 @@ export default function AfterClassPlannerScreen() {
       setNarrative(data.narrative ?? null);
       const chain: { dest: string; options: RecommendationOption[] }[] = data.destination_sequence ?? [];
       setResults(chain);
+      setRequested(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to get plan.");
     } finally {
@@ -194,6 +200,16 @@ export default function AfterClassPlannerScreen() {
       )}
 
       {error && <Text style={styles.error}>{error}</Text>}
+
+      {/* The planner answered but had nothing for this request — say so,
+          rather than leaving the region below the button blank. */}
+      {requested && !loading && !error && results.length === 0 && !narrative && (
+        <EmptyState
+          icon={MapPinOff}
+          title="No plan for that"
+          subtitle="We couldn't turn that into a route. Try naming a specific place, like a gym, a library, or a street address."
+        />
+      )}
 
       {narrative && (
         <FadeInView>

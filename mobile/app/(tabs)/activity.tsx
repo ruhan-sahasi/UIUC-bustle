@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Haptics from 'expo-haptics';
 import { fetchEodReport } from "@/src/api/client";
 import { formatDistance } from "@/src/utils/distance";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
@@ -10,7 +9,6 @@ import PatternInsightCards from "@/src/components/PatternInsightCards";
 import { useMutation } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   RefreshControl,
   ScrollView,
@@ -28,9 +26,12 @@ import { AreaSpark, BarRow, RingGauge, type BarDatum } from "@/src/components/ui
 import {
   AnimatedNumber,
   FadeInView,
+  fireHaptic,
   Odometer,
   PressableScale,
   PulseView,
+  Skeleton,
+  Stagger,
 } from "@/src/components/ui/motion";
 
 const CHART_DAYS = 7;
@@ -335,7 +336,7 @@ export default function ActivityScreen() {
     };
     generateReport(payload, {
       onSuccess: () => {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        fireHaptic("arrive");
       },
       onError: (e) => {
         setReportError(e instanceof Error ? e.message : "Failed to get report.");
@@ -394,9 +395,21 @@ export default function ActivityScreen() {
   const weeklyPct = Math.round((weeklySteps / weeklyGoal) * 100);
 
   if (loading) {
+    // Skeletons shaped like the screen that is coming: hero card, the
+    // goal + streak pair, then the week chart. Explicit sizes so the layout
+    // doesn't shift when the real cards land.
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={theme.colors.navy} />
+      <View style={styles.loadingWrap}>
+        <Skeleton height={236} radius={theme.radius.xxl} />
+        <View style={styles.loadingRow}>
+          <View style={styles.streakSlotWide}>
+            <Skeleton height={176} radius={theme.radius.xl} />
+          </View>
+          <View style={styles.streakSlot}>
+            <Skeleton height={176} radius={theme.radius.xl} />
+          </View>
+        </View>
+        <Skeleton height={148} radius={theme.radius.xl} />
       </View>
     );
   }
@@ -638,14 +651,19 @@ export default function ActivityScreen() {
         </FadeInView>
       ) : (
         <View style={styles.walksCard}>
-          {todayEntries.map((e, i) => (
-            <FadeInView key={e.id} delay={i * 60} style={[styles.entryRow, i > 0 && styles.entryRowBorder]}>
-              <Text style={styles.entryRoute}>{e.from} → {e.to}</Text>
-              <Text style={styles.entryMeta}>
-                {e.walkingModeId} · {formatDistance(e.distanceM)} · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
-              </Text>
-            </FadeInView>
-          ))}
+          {/* Shared list cadence with a cap, replacing the uncapped
+              delay={i * 60} ladder — a long day of walks no longer makes the
+              last row wait out the whole list. */}
+          <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
+            {todayEntries.map((e, i) => (
+              <View key={e.id} style={[styles.entryRow, i > 0 && styles.entryRowBorder]}>
+                <Text style={styles.entryRoute}>{e.from} → {e.to}</Text>
+                <Text style={styles.entryMeta}>
+                  {e.walkingModeId} · {formatDistance(e.distanceM)} · {Math.floor(e.durationSeconds / 60)} min · {e.caloriesBurned.toFixed(1)} kcal · {e.stepCount} steps
+                </Text>
+              </View>
+            ))}
+          </Stagger>
         </View>
       )}
 
@@ -731,8 +749,16 @@ export default function ActivityScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.surfaceAlt },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: theme.colors.surfaceAlt },
   container: { padding: theme.layout.gutter, paddingBottom: 40 },
+
+  // First-load skeletons, laid out like the real screen
+  loadingWrap: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceAlt,
+    padding: theme.layout.gutter,
+    gap: theme.layout.gutter,
+  },
+  loadingRow: { flexDirection: "row", gap: theme.layout.cardGap },
 
   // Auto-walk banner
   banner: {
