@@ -69,10 +69,19 @@ def get_current_user(request: Request) -> str:
             key,
             algorithms=algorithms,
             audience="authenticated",
-            # Reject tokens missing an expiry or subject rather than silently
-            # accepting them (defense-in-depth on top of signature verification).
-            options={"require": ["exp", "sub"]},
+            # Bind the token to THIS project's Supabase Auth server. Blocks
+            # signed-but-foreign tokens (e.g. another project sharing a leaked
+            # secret) from being accepted here.
+            issuer=settings.supabase_url.rstrip("/") + "/auth/v1",
+            # Reject tokens missing an expiry, subject, or issuer rather than
+            # silently accepting them (defense-in-depth on top of signature
+            # verification).
+            options={"require": ["exp", "sub", "iss"]},
         )
+        # Supabase encodes the Postgres role in the token; an "anon" token is
+        # validly signed but must never authenticate as a user.
+        if payload.get("role") is not None and payload["role"] != "authenticated":
+            raise HTTPException(status_code=401, detail="Invalid token")
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
