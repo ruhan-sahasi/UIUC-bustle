@@ -5,9 +5,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from src.middleware.request_logging import _redact_path
+
 logger = logging.getLogger(__name__)
 
-AUTH_EXEMPT_PATHS = {"/health", "/health/ready", "/metrics"}
+AUTH_EXEMPT_PATHS = {"/health", "/health/ready"}
 
 
 def get_valid_api_keys(api_keys_str: str) -> set[str]:
@@ -43,7 +45,7 @@ class OptionalAPIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         key = extract_api_key(request)
         if not key or not self._is_valid_key(key):
-            logger.warning("telemetry auth_failed path=%s", request.url.path)
+            logger.warning("telemetry auth_failed path=%s", _redact_path(request.url.path))
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid or missing API key. Provide X-API-Key header."},
