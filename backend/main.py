@@ -175,6 +175,10 @@ RADIUS_M_MIN, RADIUS_M_MAX = 100, 5000
 DEPARTURES_MINUTES_MIN, DEPARTURES_MINUTES_MAX = 1, 120
 STOP_ID_MAX_LEN = 64
 STOP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_:\-]+$")  # ':' — MTD child stop points (e.g. IU:1)
+# One authenticated user can otherwise insert unbounded schedule rows (storage
+# exhaustion + unbounded list/recommendation scans). A real course load is well
+# under this cap.
+MAX_CLASSES_PER_USER = 100
 
 
 def _validate_lat_lng(lat: float, lng: float) -> None:
@@ -949,6 +953,17 @@ async def post_schedule_class(request: Request, body: CreateClassRequest, user_i
     except RuntimeError:
         raise HTTPException(status_code=503, detail="Database unavailable")
     await pool.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
+    existing = await pool.fetchval(
+        "SELECT COUNT(*) FROM schedule_classes WHERE user_id = $1", user_id
+    )
+    if existing is not None and existing >= MAX_CLASSES_PER_USER:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Schedule limit reached: at most {MAX_CLASSES_PER_USER} classes "
+                "per user. Delete an existing class before adding another."
+            ),
+        )
     try:
         rec = await create_class(
             pool,
@@ -1164,9 +1179,12 @@ async def post_recommendation(request: Request, body: RecommendationRequest, use
             # get_best_route uses the synchronous Anthropic SDK (a blocking HTTPS
             # call). Run it in a thread so it doesn't stall the event loop for
             # every other concurrent request while Claude responds.
+            # Round the user's location to 3 decimal places (~110 m) before it
+            # is embedded in the prompt sent to the Claude API — the third
+            # party never needs the user's precise position to rank routes.
             ai_result = await asyncio.to_thread(
                 ai_client.get_best_route,
-                origin=f"{body.lat},{body.lng}",
+                origin=f"{round(body.lat, 3)},{round(body.lng, 3)}",
                 destination=dest_name,
                 route_options=route_opts_for_ai,
                 user_context={},
@@ -1631,10 +1649,31 @@ async def get_share_trip_status(request: Request, token: str):
     return ShareTripStatusResponse(**status)
 
 
+# Security headers for the share page. The page embeds live trip data behind a
+# secret capability URL, so: no caching (no-store), no referrer leakage of the
+# token (Referrer-Policy + the meta tag in page.py), and the tightest CSP its
+# actual inline HTML needs — one inline <style> and one inline <script> whose
+# only network call is fetch('/share/trips/<token>/status') (connect-src
+# 'self'). The page has no <img> tags or CSS url() images, so img-src stays at
+# 'self' only for the browser's implicit same-origin favicon probe (no data:
+# URIs are used anywhere). frame-ancestors 'none' blocks clickjacking overlays;
+# base-uri/form-action 'none' close off injection pivots.
+_SHARE_PAGE_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "connect-src 'self'; img-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
+}
+
+
 @app.get("/t/{token}", response_class=HTMLResponse, include_in_schema=False)
 @limiter.limit("60/minute")
 def share_trip_page(request: Request, token: str):
     """Serve the recipient share page."""
     if not re.fullmatch(r'[A-Za-z0-9_\-]{6,64}', token):
-        return HTMLResponse("<h1>Invalid link</h1>", status_code=400)
-    return HTMLResponse(content=build_share_page(token))
+        return HTMLResponse("<h1>Invalid link</h1>", status_code=400, headers=_SHARE_PAGE_HEADERS)
+    return HTMLResponse(content=build_share_page(token), headers=_SHARE_PAGE_HEADERS)
