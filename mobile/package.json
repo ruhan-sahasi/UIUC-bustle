@@ -70,7 +70,8 @@
   },
   "private": true,
   "overrides": {
-    "minimatch": "10.2.1",
-    "tar": "7.5.8"
+    "decode-uri-component": "^0.4.1",
+    "minimatch": "^10.2.3",
+    "tar": "^7.5.21"
   }
 }
