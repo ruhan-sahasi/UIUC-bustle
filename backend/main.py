@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import time
+import weakref
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from settings import get_settings
 from src.data.db import init_pool, close_pool, get_pool
@@ -40,11 +42,17 @@ from src.recommendation.service import compute_recommendations
 from src.share.models import (
     CreateShareTripRequest,
     CreateShareTripResponse,
+    NoNulModel,
     PatchShareTripRequest,
     ShareTripStatusResponse,
     VALID_PHASES,
 )
-from src.share.repo import create_shared_trip, get_shared_trip_status, patch_shared_trip
+from src.share.repo import (
+    create_shared_trip,
+    delete_expired_shared_trips,
+    get_shared_trip_status,
+    patch_shared_trip,
+)
 from src.share.page import build_share_page
 from src.schedule.models import (
     BuildingsListResponse,
@@ -70,6 +78,45 @@ def _sentry_traces_sampler(sampling_context: dict) -> float:
     return 0.1
 
 
+# Any `key=` query pair (MTD_API_KEY, Google keys) must never reach Sentry.
+_SENTRY_KEY_PAIR_RE = re.compile(r"(?i)(key=)[^&\s]+")
+
+
+def _scrub_sentry_url(url: str) -> str:
+    """Redact share tokens in the path and any key= query value."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    query = _SENTRY_KEY_PAIR_RE.sub(r"\1<redacted>", parts.query)
+    return urlunsplit((parts.scheme, parts.netloc, _redact_path(parts.path), query, ""))
+
+
+def _sentry_before_send(event: dict, hint: dict) -> dict:
+    request = event.get("request") or {}
+    if request.get("url"):
+        request["url"] = _scrub_sentry_url(str(request["url"]))
+        event["request"] = request
+    return event
+
+
+def _sentry_before_send_transaction(event: dict, hint: dict) -> dict:
+    event = _sentry_before_send(event, hint)
+    for span in event.get("spans") or []:
+        data = span.get("data") or {}
+        description = str(span.get("description") or "")
+        # The MTD API takes its key as a query parameter; httpx spans record it
+        # in http.query/url. Strip both for any span touching developer.cumtd.com.
+        if "developer.cumtd.com" in description or "developer.cumtd.com" in str(data.get("url", "")):
+            data.pop("http.query", None)
+            data.pop("url", None)
+            span["description"] = description.partition("?")[0]
+        for k, v in list(data.items()):
+            if isinstance(v, str) and _SENTRY_KEY_PAIR_RE.search(v):
+                data[k] = _SENTRY_KEY_PAIR_RE.sub(r"\1<redacted>", v)
+        span["data"] = data
+    return event
+
+
 if settings.sentry_dsn:
     # Guard ensures sentry_dsn is non-empty before init; empty string raises BadDsn.
     sentry_sdk.init(
@@ -77,6 +124,8 @@ if settings.sentry_dsn:
         integrations=[FastApiIntegration()],
         traces_sampler=_sentry_traces_sampler,
         send_default_pii=False,
+        before_send=_sentry_before_send,
+        before_send_transaction=_sentry_before_send_transaction,
     )
 
 BACKEND_ROOT = Path(__file__).resolve().parent
@@ -94,7 +143,30 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute"])
+def _client_ip(request: Request) -> str:
+    """Resolve the client IP for rate limiting / dedup.
+
+    X-Forwarded-For is client-forgeable: honoring an attacker-chosen hop lets a
+    single machine rotate identities to bypass rate limits and poison the
+    crowding dedup. Only when TRUST_PROXY_HEADERS is set (app behind a proxy
+    that appends the real peer) do we read XFF — and then the RIGHTMOST entry,
+    the one appended by our own proxy, never the client-supplied leftmost.
+    """
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _log_safe(s: object, limit: int = 64) -> str:
+    """Make a user-supplied value safe to log: truncate and strip CR/LF (log injection)."""
+    if s is None:
+        return ""
+    return str(s)[:limit].replace("\r", "").replace("\n", " ")
+
+
+limiter = Limiter(key_func=_client_ip, default_limits=["100/minute"])
 
 # Input validation bounds (public robustness)
 LAT_MIN, LAT_MAX = -90.0, 90.0
@@ -197,6 +269,15 @@ async def lifespan(app: FastAPI):
                     logger.info("telemetry crowding_cleanup deleted=%d", deleted)
             except Exception as e:
                 logger.warning("telemetry crowding_cleanup_error error=%s", str(e))
+            try:
+                # Hard-delete shared trips 24h past expiry: lazy read-time cleanup
+                # only fires for tokens that are polled again, so abandoned rows
+                # otherwise accumulate destination data forever.
+                swept = await delete_expired_shared_trips(get_pool())
+                if swept:
+                    logger.info("telemetry shared_trips_cleanup deleted=%d", swept)
+            except Exception as e:
+                logger.warning("telemetry shared_trips_cleanup_error error=%s", str(e))
             await asyncio.sleep(3600)
 
     cleanup_task = asyncio.create_task(_crowding_cleanup()) if settings.database_url else None
@@ -210,7 +291,10 @@ async def lifespan(app: FastAPI):
         await close_pool()
 
 
-app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+# Interactive docs and the OpenAPI schema are an unnecessary reconnaissance
+# surface in production — only serve them in debug mode.
+_docs_kwargs = {} if settings.debug else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan, **_docs_kwargs)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -228,12 +312,31 @@ def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+# Largest request body accepted anywhere on this API (biggest legitimate
+# payload is a few KB of EOD report entries). Bigger bodies are rejected before
+# the JSON parser ever buffers them.
+MAX_BODY_BYTES = 65536
+
+
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose declared Content-Length exceeds MAX_BODY_BYTES with 413."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length", "")
+        if content_length.isdigit() and int(content_length) > MAX_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+        return await call_next(request)
+
+
 # Order: add_middleware prepends, so the last added is outermost:
-# CORS -> Auth -> RequestLogging -> SlowAPI -> routes.
+# CORS -> Auth -> RequestLogging -> SlowAPI -> BodySizeLimit -> routes.
 # slowapi applies `default_limits` only from inside SlowAPIMiddleware (the
 # decorator covers decorated routes only). Without it the 100/minute default
-# silently covered none of the undecorated routes. Innermost so its 429s are
-# still logged/counted by RequestLogging and get CORS headers.
+# silently covered none of the undecorated routes. Innermost-but-one so its
+# 429s are still logged/counted by RequestLogging and get CORS headers; the
+# body-size guard sits innermost so oversized bodies still count against the
+# limiter and get logged.
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
@@ -250,7 +353,7 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=False,  # credentials=True + wildcard origin is a CORS misconfiguration
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Edit-Token"],
 )
 
 
@@ -268,16 +371,41 @@ def health(request: Request):
     return {"status": "ok"}
 
 
+# /health/ready memo: (weakref to the pool it was measured against, monotonic
+# timestamp, ok). Keyed on the pool identity so a reconnected pool invalidates
+# the cache; 5s TTL stops the limiter-exempt probe from being a free
+# per-request `SELECT 1` amplifier against the database.
+_READY_CACHE_TTL = 5.0
+_ready_cache: dict = {"pool_ref": None, "at": 0.0, "ok": False}
+
+
 @app.get("/health/ready")
 @limiter.exempt
 async def health_ready(request: Request):
     """Readiness probe: verifies the database is reachable (vs. /health, which is
-    a liveness probe that only confirms the process is up)."""
+    a liveness probe that only confirms the process is up). Result memoized 5s."""
     try:
         pool = get_pool()
-        await pool.fetchval("SELECT 1")
     except Exception as e:
         logger.warning("telemetry route=health_ready status=unavailable error=%s", str(e))
+        raise HTTPException(status_code=503, detail="Database not ready")
+    now = time.monotonic()
+    cached_ref = _ready_cache["pool_ref"]
+    if cached_ref is not None and cached_ref() is pool and now - _ready_cache["at"] < _READY_CACHE_TTL:
+        if _ready_cache["ok"]:
+            return {"status": "ready"}
+        raise HTTPException(status_code=503, detail="Database not ready")
+    ok = True
+    try:
+        await pool.fetchval("SELECT 1")
+    except Exception as e:
+        ok = False
+        logger.warning("telemetry route=health_ready status=unavailable error=%s", str(e))
+    try:
+        _ready_cache.update(pool_ref=weakref.ref(pool), at=now, ok=ok)
+    except TypeError:
+        pass  # non-weakref-able pool stand-ins (plain objects in tests) — skip memo
+    if not ok:
         raise HTTPException(status_code=503, detail="Database not ready")
     return {"status": "ready"}
 
@@ -441,9 +569,14 @@ async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
     if len(query) < 2:
         return []
 
-    # Build prefix pattern from first 4 significant chars (tolerates typos after char 4)
-    prefix_len = min(4, len(query))
-    prefix = re.escape(query[:prefix_len])
+    # Build prefix pattern from first 4 significant chars (tolerates typos after
+    # char 4). Strip everything but alphanumerics/spaces BEFORE escaping: the
+    # prefix is interpolated into a quoted Overpass QL regex, so quotes and
+    # backslashes in user input could otherwise break out of the pattern.
+    sanitized = re.sub(r"[^A-Za-z0-9 ]", "", query)
+    prefix = re.escape(sanitized[:4])
+    if not prefix.strip():
+        return []
     # Overpass QL: search nodes + ways with matching name, case-insensitive (,i flag)
     overpass_q = (
         f'[out:json][timeout:6];'
@@ -457,7 +590,7 @@ async def _overpass_poi_search(query: str, limit: int = 5) -> list[dict]:
             r.raise_for_status()
             elements = r.json().get("elements", [])
     except Exception as e:
-        logger.warning("overpass_poi_search_error query=%s error=%s", query[:30], str(e))
+        logger.warning("overpass_poi_search_error query_len=%d error=%s", len(query), _log_safe(e, 200))
         return []
 
     def similarity(name: str) -> float:
@@ -521,6 +654,8 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
     query = (q or "").strip()
     if not query or len(query) < 2:
         return {"results": []}
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Query too long")
 
     # Parallel: buildings + Google Places (or Overpass POI + Nominatim fallback)
     try:
@@ -597,7 +732,7 @@ async def geocode(request: Request, q: str = ""):
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        logger.warning("telemetry geocode_error q=%s error=%s", query[:50], str(e))
+        logger.warning("telemetry geocode_error q_len=%d error=%s", len(query), _log_safe(e, 200))
         raise HTTPException(status_code=502, detail="Geocoding service unavailable. Try again.") from e
     return result
 
@@ -668,7 +803,7 @@ async def get_departures(request: Request, stop_id: str, minutes: int = 60):
 @app.get("/vehicles")
 async def get_vehicles(request: Request, route_id: str = ""):
     """Return vehicles currently in service. Optional ?route_id= filter. 10s TTL cache."""
-    logger.info("telemetry route=vehicles route_id=%s", route_id or "all")
+    logger.info("telemetry route=vehicles route_id=%s", _log_safe(route_id) or "all")
     client: MTDClient | None = getattr(app.state, "mtd_client", None)
     if not client:
         raise HTTPException(
@@ -685,17 +820,17 @@ async def get_vehicles(request: Request, route_id: str = ""):
 
 # --- Crowding reports ---
 
-from pydantic import BaseModel as _PydanticBaseModel
+from pydantic import BaseModel as _PydanticBaseModel, Field as _PydanticField
 
 
-class CrowdingReportRequest(_PydanticBaseModel):
-    vehicle_id: str
-    route_id: str
-    trip_id: Optional[str] = None
+class CrowdingReportRequest(NoNulModel):
+    vehicle_id: str = _PydanticField(..., max_length=64)
+    route_id: str = _PydanticField(..., max_length=64)
+    trip_id: Optional[str] = _PydanticField(None, max_length=64)
     crowding_level: int
     lat: Optional[float] = None
     lon: Optional[float] = None
-    user_token: Optional[str] = None
+    user_token: Optional[str] = _PydanticField(None, max_length=128)
 
 
 class CrowdingResponse(_PydanticBaseModel):
@@ -711,13 +846,18 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
     """Submit a crowding report. Rate limited. Server-side 10-min per-token rate limit."""
     if not 1 <= body.crowding_level <= 4:
         raise HTTPException(status_code=422, detail="crowding_level must be 1-4")
+    if body.lat is not None or body.lon is not None:
+        _validate_lat_lng(
+            body.lat if body.lat is not None else 0.0,
+            body.lon if body.lon is not None else 0.0,
+        )
     # Derive the dedup identity server-side from the client IP rather than trusting
     # the client-supplied user_token (which could be omitted or rotated to bypass
-    # the per-bus rate limit and poison the crowdsourced aggregate). X-Forwarded-For
-    # is honored because the app runs behind a proxy that sets the real client IP.
-    forwarded = request.headers.get("X-Forwarded-For")
-    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
-    dedup_key = hashlib.sha256(client_ip.encode("utf-8")).hexdigest()
+    # the per-bus rate limit and poison the crowdsourced aggregate). _client_ip only
+    # honors X-Forwarded-For (rightmost, proxy-appended hop) when TRUST_PROXY_HEADERS
+    # is set — the leftmost hop is client-forgeable and allowed unlimited aggregate
+    # poisoning from one machine.
+    dedup_key = hashlib.sha256(_client_ip(request).encode("utf-8")).hexdigest()
     already_reported = await check_rate_limit(get_pool(), dedup_key, body.vehicle_id)
     if already_reported:
         raise HTTPException(status_code=429, detail="You already reported this bus recently. Try again in 10 minutes.")
@@ -734,7 +874,7 @@ async def submit_crowding_report(request: Request, body: CrowdingReportRequest):
     reports = await get_recent_reports(get_pool(), body.vehicle_id)
     agg = compute_weighted_level(reports)
     current = {"level": agg.level, "confidence": agg.confidence, "source": agg.source, "report_count": agg.report_count} if agg else None
-    logger.info("telemetry route=crowding_report vehicle=%s level=%d", body.vehicle_id, body.crowding_level)
+    logger.info("telemetry route=crowding_report vehicle=%s level=%d", _log_safe(body.vehicle_id), body.crowding_level)
     return {"success": True, "current_aggregate": current}
 
 
@@ -1443,7 +1583,7 @@ async def post_share_trip(request: Request, body: CreateShareTripRequest):
     """Create a new shared trip record. Returns token and shareable URL."""
     if body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
-    token = await create_shared_trip(
+    token, edit_token = await create_shared_trip(
         get_pool(),
         destination=body.destination[:200],
         route_id=body.route_id,
@@ -1452,18 +1592,30 @@ async def post_share_trip(request: Request, body: CreateShareTripRequest):
         phase=body.phase,
         eta_epoch=body.eta_epoch,
     )
-    base = settings.public_base_url.rstrip("/") if settings.public_base_url else str(request.base_url).rstrip("/")
-    url = f"{base}/t/{token}"
-    return CreateShareTripResponse(token=token, url=url)
+    # Never derive the link from the client-controlled Host header: a spoofed
+    # Host would poison the URL the creator copies to friends. No configured
+    # PUBLIC_BASE_URL -> url is null and the client builds its own link.
+    if settings.public_base_url:
+        url = f"{settings.public_base_url.rstrip('/')}/t/{token}"
+    else:
+        url = None
+    return CreateShareTripResponse(token=token, edit_token=edit_token, url=url)
 
 
 @app.patch("/share/trips/{token}")
 @limiter.limit("60/minute")
 async def patch_share_trip(request: Request, token: str, body: PatchShareTripRequest):
-    """Update phase and/or eta for a shared trip. Returns 404 if expired or not found."""
+    """Update phase and/or eta for a shared trip.
+
+    Requires the X-Edit-Token header (the writer credential returned at
+    creation); the public read token alone must not be able to mutate the trip.
+    Missing/wrong edit token, unknown token, and expired trip are all the same
+    404 so the response is not an oracle.
+    """
     if body.phase is not None and body.phase not in VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"phase must be one of {sorted(VALID_PHASES)}")
-    updated = await patch_shared_trip(get_pool(), token, body.phase, body.eta_epoch)
+    edit_token = request.headers.get("X-Edit-Token")
+    updated = await patch_shared_trip(get_pool(), token, edit_token, body.phase, body.eta_epoch)
     if not updated:
         raise HTTPException(status_code=404, detail="Trip not found or has expired")
     return {"ok": True}

@@ -30,8 +30,15 @@ class Settings(BaseSettings):
     google_places_api_key: str = ""
 
     # Share trips: base URL for share links (e.g. http://192.168.1.5:8000).
-    # Falls back to request Host header if unset.
+    # When unset, share responses return url=null (never derived from the
+    # client-controlled Host header).
     public_base_url: str = ""
+
+    # Trust X-Forwarded-For for client IP resolution. Enable ONLY when the app
+    # runs behind a proxy that overwrites/appends the real client IP (e.g.
+    # Railway). When false (default), the socket peer address is used, so
+    # clients cannot forge their IP for rate limiting / crowding dedup.
+    trust_proxy_headers: bool = False
 
     # Supabase Auth — set SUPABASE_JWT_SECRET in Railway env vars (Settings → API → JWT Secret)
     supabase_jwt_secret: str = ""
