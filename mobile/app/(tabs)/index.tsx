@@ -1,5 +1,5 @@
-import { createShareTrip, fetchAutocomplete, fetchBuildings, fetchClasses, fetchDepartures, fetchNearbyStops, fetchPlaceDetails, fetchPlacesAutocomplete, fetchRecommendation } from "@/src/api/client";
-import type { AutocompleteResult, Building } from "@/src/api/client";
+import { createShareTrip, fetchAutocomplete, fetchBuildings, fetchDepartures, fetchPlaceDetails, fetchRecommendation } from "@/src/api/client";
+import type { AutocompleteResult } from "@/src/api/client";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
 import { useRecommendationSettings } from "@/src/hooks/useRecommendationSettings";
@@ -32,8 +32,6 @@ import { useNearbyStops } from "@/src/queries/departures";
 import { useRecommendation } from "@/src/queries/recommendation";
 import { useAutocomplete } from "@/src/queries/places";
 import { useCrowding } from "@/src/queries/crowding";
-import type { RouteCardProps } from "@/src/components/ui/RouteCard";
-import { RouteCard } from "@/src/components/ui/RouteCard";
 import { CrowdingBadge } from "@/src/components/ui/CrowdingBadge";
 import { CrowdingBanner } from "@/src/components/CrowdingBanner";
 function newSessionToken(): string {
@@ -90,9 +88,10 @@ import { EmptyState } from "@/src/components/ui/EmptyState";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ArrowRight, Clock, Footprints, MapPin, Search, Star, X } from "lucide-react-native";
-import * as Haptics from "expo-haptics";
 
 const TOP_STOPS = 3;
+/** Cap each stop card's departure list — the API can return an hour of rows. */
+const MAX_DEPARTURES_PER_STOP = 6;
 const UIUC_FALLBACK = { lat: 40.102, lng: -88.2272 };
 
 function getGreeting(): string {
@@ -118,9 +117,10 @@ function NextUpArrow() {
  * rather than animating its height, so the height cannot depend on which hero
  * variant is showing. Sized for the tallest one (greeting + date + next-class
  * chip + full marquee); the hero content is bottom-anchored inside the box, so
- * the marquee's bottom edge — and therefore the search card that overlaps it —
- * lands in exactly the same place in every variant, and the shorter variants
- * spend the slack as empty navy under the status bar where nothing lives.
+ * the marquee's bottom edge — and therefore its gap to the search card that
+ * starts below the box — lands in exactly the same place in every variant, and
+ * the shorter variants spend the slack as empty navy under the status bar
+ * where nothing lives.
  */
 const HERO_BODY_HEIGHT = 300;
 
@@ -306,7 +306,7 @@ export default function HomeScreen() {
     () => (cachedHomeData ? { stops: cachedHomeData.stops } : undefined),
     [cachedHomeData]
   );
-  const { data: nearbyStopsData } = useNearbyStops(
+  const { data: nearbyStopsData, isError: nearbyStopsError } = useNearbyStops(
     location?.lat ?? 0,
     location?.lng ?? 0,
     {
@@ -410,35 +410,42 @@ export default function HomeScreen() {
   }, []);
 
   // ── Location detection ─────────────────────────────────────────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const { status: perm } = await Location.requestForegroundPermissionsAsync();
-        if (perm !== "granted") {
-          setStatus("denied");
-          return;
-        }
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        let { latitude, longitude } = loc.coords;
-        const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
-        if (distToUiuc > 100_000) {
-          latitude = UIUC_FALLBACK.lat;
-          longitude = UIUC_FALLBACK.lng;
-        }
-        setLocation({ lat: latitude, lng: longitude });
-        locationRef.current = { lat: latitude, lng: longitude };
-        setStatus("ready");
-      } catch (e) {
-        const isAbort = e instanceof Error && e.name === "AbortError";
-        if (!isAbort) {
-          setStatus("error");
-          setErrorMessage(e instanceof Error ? e.message : "Something went wrong");
-        }
+  // Extracted from the mount effect so the error state's Retry can actually
+  // re-run GPS detection — onRefresh() only refetches queries and could never
+  // clear status === "error".
+  const detectLocation = useCallback(async () => {
+    setStatus("loading");
+    setErrorMessage(null);
+    try {
+      const { status: perm } = await Location.requestForegroundPermissionsAsync();
+      if (perm !== "granted") {
+        setStatus("denied");
+        return;
       }
-    })();
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      let { latitude, longitude } = loc.coords;
+      const distToUiuc = haversineMeters(latitude, longitude, UIUC_FALLBACK.lat, UIUC_FALLBACK.lng);
+      if (distToUiuc > 100_000) {
+        latitude = UIUC_FALLBACK.lat;
+        longitude = UIUC_FALLBACK.lng;
+      }
+      setLocation({ lat: latitude, lng: longitude });
+      locationRef.current = { lat: latitude, lng: longitude };
+      setStatus("ready");
+    } catch (e) {
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      if (!isAbort) {
+        setStatus("error");
+        setErrorMessage(e instanceof Error ? e.message : "Something went wrong");
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    detectLocation();
+  }, [detectLocation]);
 
   // ── Class notification scheduling ─────────────────────────────────
   useEffect(() => {
@@ -589,7 +596,7 @@ export default function HomeScreen() {
   }, [queryClient]);
 
   const onStartWalk = useCallback((opt: RecommendationOption, destNameOverride?: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    fireHaptic("commit");
     const step = opt.steps.find((s) => s.type === "WALK_TO_DEST");
     if (step?.building_lat != null && step?.building_lng != null) {
       router.push({
@@ -608,7 +615,7 @@ export default function HomeScreen() {
 
   const onStartBus = useCallback(
     (opt: RecommendationOption) => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      fireHaptic("commit");
       // Walk to the bus stop using the internal walk-nav map (no app switching)
       const step = opt.steps.find((s) => s.type === "WALK_TO_STOP");
       const rideStep = opt.steps.find((s) => s.type === "RIDE");
@@ -729,7 +736,8 @@ export default function HomeScreen() {
   const onSearchDestination = useCallback(async () => {
     const q = searchQuery.trim();
     if (!q || !location) return;
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Fire-and-forget: awaiting the haptic here delayed the loading state.
+    fireHaptic("commit");
     setSearchError(null);
     setSearchResults([]);
     setSearchDestinationName(null);
@@ -833,20 +841,35 @@ export default function HomeScreen() {
   }
 
   if (status === "error") {
+    // This state is only ever reached from a location exception — the query
+    // layer has its own error handling — so the copy talks about GPS, and
+    // Retry re-runs location detection (a query refetch could never fix it).
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorText}>Error</Text>
-        <Text style={styles.hint}>{errorMessage}</Text>
-        <Text style={styles.hint}>Check API URL in Settings and that the backend is running.</Text>
+        <Text style={styles.errorText} accessibilityRole="header">Couldn't get your location</Text>
+        {errorMessage ? <Text style={styles.hint}>{errorMessage}</Text> : null}
+        <Text style={styles.hint}>Make sure Location Services are on, then try again.</Text>
         <Pressable
-          accessibilityLabel="Retry loading"
+          accessibilityLabel="Retry location detection"
           accessibilityRole="button"
-          onPress={() => { onRefresh(); }}
+          onPress={() => { detectLocation(); }}
           style={styles.retryBtn}
         >
           <Text style={styles.retryBtnText}>Retry</Text>
         </Pressable>
-        <Pressable style={[styles.retryBtn, styles.retryBtnSecondary]} onPress={() => { setUseUiucArea(true); onRefresh(); }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Continue with the UIUC campus area instead of your location"
+          style={[styles.retryBtn, styles.retryBtnSecondary]}
+          onPress={() => {
+            // Escape hatch: proceed with the campus-center fallback. `location`
+            // already defaults to UIUC_FALLBACK, so flipping status is enough.
+            setUseUiucArea(true);
+            setLocation(UIUC_FALLBACK);
+            locationRef.current = UIUC_FALLBACK;
+            setStatus("ready");
+          }}
+        >
           <Text style={styles.retryBtnSecondaryText}>Use UIUC area (test MTD)</Text>
         </Pressable>
       </View>
@@ -1244,9 +1267,9 @@ export default function HomeScreen() {
         </LinearGradient>
       )}
     >
-      {/* Search card — floats up over the hero */}
+      {/* Search card — first card below the collapsing hero */}
       <FadeInView delay={70} style={styles.searchCard}>
-        <Text style={styles.searchLabel}>Where to?</Text>
+        <Text style={styles.searchLabel} accessibilityRole="header">Where to?</Text>
         {(homePlace || pinnedRoutes.length > 0) && !searchQuery.trim() && !searchLoading && (
           <View style={styles.quickChipsRow}>
             {homePlace && (
@@ -1378,8 +1401,12 @@ export default function HomeScreen() {
         <PressableScale
           scaleTo={0.97}
           style={[styles.searchBtn, searchLoading && styles.searchBtnDisabled]}
-          onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); onSearchDestination(); }}
+          // onSearchDestination fires its own haptic — no second one here.
+          onPress={onSearchDestination}
           disabled={searchLoading || !searchQuery.trim() || !location}
+          accessibilityRole="button"
+          accessibilityLabel="Get routes"
+          accessibilityState={{ disabled: searchLoading || !searchQuery.trim() || !location, busy: searchLoading }}
         >
           <LinearGradient
             colors={[theme.gradients.sunset[0], theme.gradients.sunset[1]]}
@@ -1453,7 +1480,7 @@ export default function HomeScreen() {
             accessibilityRole="button"
             accessibilityLabel="Use my location"
             hitSlop={14}
-            onPress={() => { setUseUiucArea(false); onRefresh(); }}
+            onPress={() => { setUseUiucArea(false); detectLocation(); }}
           >
             <Text style={styles.uiucBannerLink}>Use my location</Text>
           </Pressable>
@@ -1462,9 +1489,15 @@ export default function HomeScreen() {
       {rainMode && (
         <View style={styles.rainBanner}>
           <Text style={styles.rainBannerText}>Rain mode on — bus routes prioritised, +5 min buffer</Text>
-          <Pressable onPress={() => {}} accessibilityRole="button" accessibilityLabel="Rain mode active">
-            <Text style={styles.rainBannerIcon}>☂</Text>
-          </Pressable>
+          {/* Decorative — the banner text already says it all. A no-op Pressable
+              here was an a11y "button" that did nothing. */}
+          <Text
+            style={styles.rainBannerIcon}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          >
+            ☂
+          </Text>
         </View>
       )}
 
@@ -1473,7 +1506,7 @@ export default function HomeScreen() {
         <View style={styles.recommendationsSection}>
           <View style={styles.searchResultsHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Routes to</Text>
+              <Text style={[styles.sectionTitle, { marginBottom: 0 }]} accessibilityRole="header">Routes to</Text>
               <Text style={styles.sectionSubtitle}>{searchDestinationName.split(",")[0]}</Text>
             </View>
             {lastSearchGeo && (
@@ -1648,7 +1681,7 @@ export default function HomeScreen() {
       {/* Section divider — separates search results from class schedule block */}
       <View style={styles.scheduleSectionDivider}>
         <View style={styles.scheduleSectionLine} />
-        <Text style={styles.scheduleSectionLabel}>Your schedule</Text>
+        <Text style={styles.scheduleSectionLabel} accessibilityRole="header">Your schedule</Text>
         <View style={styles.scheduleSectionLine} />
       </View>
 
@@ -1717,7 +1750,7 @@ export default function HomeScreen() {
       {!nextUp && afterLastClassPlace && afterLastClassRecs.length > 0 && (
         <View style={styles.recommendationsSection}>
           <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.lg }}>
-            <Text style={[styles.sectionTitle, { marginBottom: 0, paddingHorizontal: 0, paddingTop: 0 }]}>Where to next?</Text>
+            <Text style={[styles.sectionTitle, { marginBottom: 0, paddingHorizontal: 0, paddingTop: 0 }]} accessibilityRole="header">Where to next?</Text>
             <Text style={styles.sectionSubtitle}>{afterLastClassPlace.name}</Text>
           </View>
           <Stagger step={STAGGER.listStep} cap={STAGGER.listCap}>
@@ -1749,7 +1782,7 @@ export default function HomeScreen() {
           }}
         >
           <View style={styles.getThereHeader}>
-            <Text style={styles.getThereTitle}>Get there</Text>
+            <Text style={styles.getThereTitle} accessibilityRole="header">Get there</Text>
             <Text style={styles.sectionSubtitle}>{nextUp.title}</Text>
           </View>
           {/* Sort toggle for class recommendations */}
@@ -1851,7 +1884,7 @@ export default function HomeScreen() {
       )}
 
       {/* Nearby stops */}
-      <Text style={styles.stopsSectionTitle}>Nearby stops</Text>
+      <Text style={styles.stopsSectionTitle} accessibilityRole="header">Nearby stops</Text>
       {stops.length > 0 &&
         !departures.anyPending &&
         !departures.anyError &&
@@ -1862,9 +1895,16 @@ export default function HomeScreen() {
           </View>
         )}
       {stops.length === 0 ? (
-        // `undefined` means the nearby-stops query has not answered yet —
-        // an empty array is a real, earned "nothing in range".
-        nearbyStopsData === undefined ? (
+        nearbyStopsError ? (
+          // A failed query also leaves `data` undefined — without this branch
+          // the skeletons below would shimmer forever on error.
+          <EmptyState
+            icon={MapPin}
+            title="Couldn't load nearby stops"
+            subtitle="Check your connection and try again."
+            action={{ label: "Retry", onPress: onRefresh }}
+          />
+        ) : nearbyStopsData === undefined ? (
           <View style={styles.stopsSkeletonWrap}>
             <Skeleton width="100%" height={112} radius={theme.radius.xl} />
             <Skeleton width="100%" height={112} radius={theme.radius.xl} />
@@ -1912,7 +1952,7 @@ export default function HomeScreen() {
                     <Text style={styles.depText}>No departures due</Text>
                   )
                 ) : (
-                  (departuresByStop[stop.stop_id] ?? []).map((d, i) => {
+                  (departuresByStop[stop.stop_id] ?? []).slice(0, MAX_DEPARTURES_PER_STOP).map((d, i) => {
                     const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
                     const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
                     const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
@@ -1921,8 +1961,11 @@ export default function HomeScreen() {
                       <View key={i}>
                         <Pressable
                           onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Track route ${d.route}`}
+                          // NOT an a11y element itself: a label here would hide
+                          // the DepartureRow's real time/live/delay summary.
+                          // The row inside stays the focusable element.
+                          accessible={false}
+                          accessibilityHint={`Opens live tracking for route ${d.route}`}
                         >
                           <DepartureRow
                             route={d.route}
@@ -1993,7 +2036,7 @@ const styles = StyleSheet.create({
 
   // Hero header. Fills the header box and anchors its content to the bottom:
   // the box is a fixed HERO_BODY_HEIGHT, so bottom-anchoring is what keeps the
-  // marquee-to-search-card overlap identical whether or not the next-class chip
+  // marquee-to-search-card spacing identical whether or not the next-class chip
   // is present. The rubber-band overscroll above it is painted by the header's
   // own background overhang, which is why there is no bounce cover here.
   heroBlock: {
@@ -2068,12 +2111,15 @@ const styles = StyleSheet.create({
   },
   heroMarqueeSkeleton: { marginTop: 8 },
 
-  // Search card — floats over the hero gradient
+  // Search card — first card under the hero. NO negative top margin: the
+  // CollapsingHeader paints the hero absolutely OVER the scroll view and pads
+  // the content by maxHeight, so a negative margin would slide this card UNDER
+  // the hero and slice its "Where to?" eyebrow. The header's padding owns the
+  // spacing.
   searchCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
     marginHorizontal: 16,
-    marginTop: -theme.radius.xxl,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: 16,
     paddingBottom: 16,
@@ -2337,7 +2383,8 @@ const styles = StyleSheet.create({
   },
   leaveNowLeft: { flex: 1, marginRight: theme.spacing.sm },
   leaveNowTitle: { fontFamily: "DMSans_600SemiBold", fontSize: 15, color: "#fff", marginBottom: 2 },
-  leaveNowBody: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "rgba(255,255,255,0.88)", fontVariant: ["tabular-nums" as const] },
+  // Pure white — the 0.88 alpha measured 4.31:1 on the orange ctaEnd ground.
+  leaveNowBody: { fontFamily: "DMSans_400Regular", fontSize: 13, color: "#fff", fontVariant: ["tabular-nums" as const] },
   leaveNowStartBtn: {
     backgroundColor: "#fff",
     borderRadius: theme.radius.md,
@@ -2366,7 +2413,8 @@ const styles = StyleSheet.create({
   leaveByStatusText: { fontSize: 10, fontFamily: "DMSans_700Bold", color: "#fff" },
   leaveByRouteText: { fontSize: 13, fontFamily: "DMSans_600SemiBold", color: "#fff" },
   leaveBySummary: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.textOnNavyMuted, flex: 1, fontVariant: ["tabular-nums" as const] },
-  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.orangeBright, marginTop: 6, fontVariant: ["tabular-nums" as const] },
+  // Gold, not orangeBright — orange on the navy card measured 3.81:1.
+  leaveByWalkFallback: { fontSize: 13, fontFamily: "DMSans_400Regular", color: theme.colors.gold, marginTop: 6, fontVariant: ["tabular-nums" as const] },
 
   // Autocomplete
   suggestionsList: {
