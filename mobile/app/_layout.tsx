@@ -1,4 +1,5 @@
 import "react-native-reanimated"; // must be first — initializes worklets runtime
+import { ReduceMotion, ReducedMotionConfig } from "react-native-reanimated";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { NotificationRedirect } from "@/src/components/NotificationRedirect";
 import "@/src/tasks/notificationRefresh"; // registers defineTask at module level
@@ -28,6 +29,8 @@ import { useEffect } from "react";
 import * as Sentry from "@sentry/react-native";
 import { PostHogProvider, usePostHog } from "posthog-react-native";
 import { theme } from "@/src/constants/theme";
+import { useDevForcedReducedMotion } from "@/src/constants/motion";
+import { useReducedMotion, useReducedMotionResolved } from "@/src/components/ui/motion";
 import { scrubBreadcrumb } from "@/src/telemetry/sentryScrub";
 
 // Sentry — init before anything else; no-ops silently when DSN is absent
@@ -110,6 +113,22 @@ export default function RootLayout() {
   const { session, user, loading: authLoading } = useAuth();
   const segments = useSegments();
 
+  // Reanimated's reduce-motion flag is seeded once at module load, so
+  // `ReduceMotion.System` on a motion token would freeze at whatever the OS
+  // setting was when the bundle loaded. These two hooks are the live inputs;
+  // the single <ReducedMotionConfig> below pushes them into that flag, which is
+  // what makes every `ReduceMotion.System` token in src/constants/motion.ts
+  // honor a mid-session toggle. This is the app's ONLY ReducedMotionConfig.
+  const systemReducedMotion = useReducedMotion();
+  const reducedMotionResolved = useReducedMotionResolved();
+  const devForcedReducedMotion = useDevForcedReducedMotion();
+  const reduceMotion = systemReducedMotion || devForcedReducedMotion;
+  // Until AccessibilityInfo has actually answered, Reanimated's own load-time
+  // snapshot is the better source: mounting the config early would push our
+  // optimistic `false` over a correct `true` and restore full motion for a
+  // Reduce Motion user for those frames. The dev override never waits.
+  const ownReduceMotionFlag = reducedMotionResolved || devForcedReducedMotion;
+
   useEffect(() => {
     registerNotificationRefreshTask();
     // Write widget data on mount and every time app comes to foreground
@@ -171,6 +190,15 @@ export default function RootLayout() {
         <GestureHandlerRootView style={{ flex: 1 }}>
           <StatusBar style="light" />
           <NotificationRedirect />
+          {/*
+            Renders nothing; it only writes Reanimated's global reduce-motion
+            flag. `Always`/`Never` deliberately, never `System` — `System` makes
+            ReducedMotionConfig re-read the same load-time snapshot we are
+            working around (see src/constants/motion.ts header).
+          */}
+          {ownReduceMotionFlag && (
+            <ReducedMotionConfig mode={reduceMotion ? ReduceMotion.Always : ReduceMotion.Never} />
+          )}
           <Stack
             screenOptions={{
               // NOTE: `animationDuration` is deliberately NOT set here. Verified in

@@ -1,10 +1,11 @@
 import { fetchBuildings, fetchClasses, fetchHealth } from "@/src/api/client";
 import { resetAllPatterns } from "@/src/utils/patternEngine";
 import { theme } from "@/src/constants/theme";
+import { SPRING_D, setDevForcedReducedMotion, useDevForcedReducedMotion } from "@/src/constants/motion";
 import { WALKING_MODES } from "@/src/constants/walkingMode";
 import { Button } from "@/src/components/ui/Button";
 import { SectionHeader } from "@/src/components/ui/SectionHeader";
-import { AnimatedNumber, FadeInView, PressableScale, useReducedMotion } from "@/src/components/ui/motion";
+import { AnimatedNumber, FadeInView, PressableScale } from "@/src/components/ui/motion";
 import { useAuth } from "@/src/auth/useAuth";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
 import { useClassNotificationsEnabled } from "@/src/hooks/useClassNotificationsEnabled";
@@ -56,12 +57,9 @@ import {
   View,
 } from "react-native";
 import Animated, {
-  ReduceMotion,
-  ReducedMotionConfig,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
-  withTiming,
 } from "react-native-reanimated";
 
 const WIDGET_STEPS = [
@@ -95,9 +93,11 @@ export default function SettingsScreen() {
   const [notificationsToggling, setNotificationsToggling] = useState(false);
   const [bufferSlider, setBufferSlider] = useState(bufferMinutes);
   const [weightSlider, setWeightSlider] = useState(weightKg);
-  // Developer-only motion override. Deliberately NOT persisted: a debug switch
-  // that survives a restart is a debug switch someone forgets is on.
-  const [forceReducedMotion, setForceReducedMotion] = useState(false);
+  // Developer-only motion override. The flag itself lives in
+  // src/constants/motion.ts (still unpersisted) because the ROOT layout owns the
+  // app's only <ReducedMotionConfig> and has to OR this with the live system
+  // setting; mounting a second config here would fight with it.
+  const forceReducedMotion = useDevForcedReducedMotion();
 
   // Keep input in sync when stored URL loads or changes
   useEffect(() => {
@@ -561,7 +561,7 @@ export default function SettingsScreen() {
               accessibilityLabel="Force reduced motion for testing"
               accessibilityRole="switch"
               accessibilityState={{ checked: forceReducedMotion }}
-              onValueChange={setForceReducedMotion}
+              onValueChange={setDevForcedReducedMotion}
               value={forceReducedMotion}
               trackColor={{ false: theme.colors.border, true: theme.colors.orange }}
               thumbColor={theme.colors.surface}
@@ -569,7 +569,8 @@ export default function SettingsScreen() {
           </View>
           <Text style={styles.hint}>
             Overrides Reanimated app-wide so every animation lands on its final frame — for checking static
-            layouts without digging through iOS Accessibility settings.
+            layouts without digging through iOS Accessibility settings. Applied by the root layout, which
+            ORs this with the live system setting.
           </Text>
           <Text style={[styles.hint, styles.hintLast]}>
             Note: this drives Reanimated only. Looping indicators (live dots, shimmers, beacons) read the real
@@ -580,11 +581,11 @@ export default function SettingsScreen() {
       ) : null}
 
       {/*
-        Renders nothing — it just sets Reanimated's global reduce-motion mode
-        while mounted, and restores the previous mode when unmounted (i.e. when
-        the switch goes back off).
+        No <ReducedMotionConfig> here on purpose. app/_layout.tsx mounts the
+        app's only one and feeds it (system setting || the toggle above); a
+        second config would clobber it, because each restores the flag value it
+        captured on mount whenever it unmounts or its mode changes.
       */}
-      {forceReducedMotion && <ReducedMotionConfig mode={ReduceMotion.Always} />}
 
       <FadeInView delay={560}>
         <View style={styles.sectionHeaderWrap}>
@@ -632,7 +633,6 @@ function SegmentedControl<T extends string>({
   selectedId: string;
   onSelect: (id: T) => void;
 }) {
-  const reduceMotion = useReducedMotion();
   const [rowWidth, setRowWidth] = useState(0);
   const count = options.length;
   const segmentWidth = count > 0 ? rowWidth / count : 0;
@@ -641,9 +641,11 @@ function SegmentedControl<T extends string>({
 
   useEffect(() => {
     if (segmentWidth <= 0) return;
-    const target = selectedIndex * segmentWidth;
-    x.value = reduceMotion ? withTiming(target, { duration: 0 }) : withSpring(target, theme.motion.springBouncy);
-  }, [selectedIndex, segmentWidth, reduceMotion, x]);
+    // No reduce-motion branch: SPRING_D.chip carries `reduceMotion: System`, and
+    // the root layout keeps that flag live, so Reanimated jumps to the target
+    // itself when reduced motion is on.
+    x.value = withSpring(selectedIndex * segmentWidth, SPRING_D.chip);
+  }, [selectedIndex, segmentWidth, x]);
 
   const indicatorStyle = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
 
