@@ -43,10 +43,11 @@ import { GLIDE } from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import { fireHaptic, useReducedMotion } from "@/src/components/ui/motion";
 import { bearingDeg, normalizeDeg, shortestAngleDelta } from "@/src/lib/geo";
-import { CROWDING_ICONS } from "@/src/utils/crowding";
+import { crowdingColor, crowdingGlyph } from "@/src/utils/crowding";
 import { haversineMeters } from "@/src/utils/distance";
+import type { LucideIcon } from "lucide-react-native";
 import React, { memo, useCallback, useEffect, useMemo, useRef } from "react";
-import { Animated, Easing, Platform, StyleSheet, Text, View } from "react-native";
+import { Animated, Easing, Platform, StyleSheet, View } from "react-native";
 import { AnimatedRegion, Marker, MarkerAnimated } from "react-native-maps";
 import type { LatLng } from "react-native-maps";
 
@@ -112,12 +113,6 @@ function snapRegion(region: MapAnimatedRegion, latitude: number, longitude: numb
   regionTiming(region, latitude, longitude, 0).start();
 }
 
-/** AA crowding accent from theme tokens — same vocabulary as CrowdingBadge. */
-function crowdRingColor(info: CrowdingInfo | null | undefined): string {
-  if (!info || info.source === "estimated") return theme.colors.crowd.estimated;
-  return theme.colors.crowd[info.level] ?? theme.colors.crowd.estimated;
-}
-
 /**
  * Spoken crowding, not badge copy. VoiceOver reads the label as a sentence, so
  * "Standing" (a fine badge word) lands as an instruction; "standing room" is a
@@ -158,7 +153,7 @@ export function vehicleMarkerKey(
   crowding?: CrowdingInfo | null
 ): string {
   const info = crowding ?? vehicle.crowding ?? null;
-  return `vehicle-${vehicle.vehicle_id}-${crowdRingColor(info)}-${info?.level ?? "none"}`;
+  return `vehicle-${vehicle.vehicle_id}-${crowdingColor(info)}-${info?.level ?? "none"}`;
 }
 
 /**
@@ -176,7 +171,7 @@ export function vehicleMarkerKey(
  * glide in flight. A vehicle with no heading and no previous fix points north
  * for one poll instead; the bearing fallback fixes it as soon as it moves.
  */
-function VehicleFace({ ringColor, glyph }: { ringColor: string; glyph: string | null }) {
+function VehicleFace({ ringColor, Glyph }: { ringColor: string; Glyph: LucideIcon | null }) {
   return (
     <View style={styles.vehicleWrap}>
       <View style={styles.headingLayer}>
@@ -185,9 +180,9 @@ function VehicleFace({ ringColor, glyph }: { ringColor: string; glyph: string | 
       <View style={[styles.vehicleDot, { borderColor: ringColor }]}>
         <View style={styles.vehicleCore} />
       </View>
-      {glyph != null && (
+      {Glyph != null && (
         <View style={styles.crowdBubble}>
-          <Text style={styles.crowdGlyph}>{glyph}</Text>
+          <Glyph size={10} color={ringColor} strokeWidth={2.6} />
         </View>
       )}
     </View>
@@ -210,8 +205,8 @@ export interface VehicleMarkerProps {
 
 function VehicleMarkerImpl({ vehicle, crowding, glide = true, onPress }: VehicleMarkerProps) {
   const info = crowding ?? vehicle.crowding ?? null;
-  const ringColor = crowdRingColor(info);
-  const glyph = info ? CROWDING_ICONS[info.level] ?? null : null;
+  const ringColor = crowdingColor(info);
+  const Glyph = info ? crowdingGlyph(info) : null;
   const label = vehicleLabel(vehicle, info);
 
   const reducedMotion = useReducedMotion();
@@ -372,7 +367,7 @@ function VehicleMarkerImpl({ vehicle, crowding, glide = true, onPress }: Vehicle
       : normalizeDeg(headingDegRef.current);
     return (
       <Marker {...shared} coordinate={staticCoordinate} rotation={staticRotation}>
-        <VehicleFace ringColor={ringColor} glyph={glyph} />
+        <VehicleFace ringColor={ringColor} Glyph={Glyph} />
       </Marker>
     );
   }
@@ -385,7 +380,7 @@ function VehicleMarkerImpl({ vehicle, crowding, glide = true, onPress }: Vehicle
       coordinate={region as unknown as LatLng}
       rotation={rotation}
     >
-      <VehicleFace ringColor={ringColor} glyph={glyph} />
+      <VehicleFace ringColor={ringColor} Glyph={Glyph} />
     </MarkerAnimated>
   );
 }
@@ -439,5 +434,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  crowdGlyph: { fontSize: 8, lineHeight: 10 },
 });

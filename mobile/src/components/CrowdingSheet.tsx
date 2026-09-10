@@ -35,8 +35,9 @@
  * ── Colour is never the signal ────────────────────────────────────────────
  * Every level pairs its crowd token with a distinctly-SHAPED glyph (a seat, a
  * pair of riders, a standing figure, a "no entry" ring) and a written label.
- * The previous coloured-circle emoji were colour twice over and read as one
- * identical dot to anyone who could not separate the hues.
+ * The glyph map lives in `src/utils/crowding.ts` — the ONE crowding
+ * vocabulary shared by every crowding surface — and is re-exported here for
+ * existing importers.
  *
  * ── Not touched by the visual pass ────────────────────────────────────────
  * The submit path, the 10-minute client-side cooldown and its AsyncStorage
@@ -52,7 +53,8 @@ import { useSubmitCrowding } from "@/src/queries/crowding";
 import { Button } from "@/src/components/ui/Button";
 import { Sheet } from "@/src/components/ui/Sheet";
 import { CelebrationBurst, fireHaptic, Press, useReducedMotion } from "@/src/components/ui/motion";
-import { Armchair, Ban, Check, PersonStanding, Users, type LucideIcon } from "lucide-react-native";
+import { CROWD_GLYPHS } from "@/src/utils/crowding";
+import { Check } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Modal,
@@ -70,16 +72,11 @@ const COOLDOWN_KEY_PREFIX = "crowding_cooldown_";
 const COOLDOWN_MS = 10 * 60 * 1000;
 
 /**
- * Per-level glyph. Shared with `CrowdingBanner` so a level looks the same
- * wherever it is shown, and chosen for SILHOUETTE rather than hue: seat,
- * people, standing figure, barred ring are four different shapes at a glance.
+ * Historical home of the per-level glyph map; it now lives in the single
+ * crowding vocabulary (`src/utils/crowding.ts`). Re-exported so existing
+ * importers keep working.
  */
-export const CROWD_GLYPHS: Record<CrowdingLevel, LucideIcon> = {
-  1: Armchair,
-  2: Users,
-  3: PersonStanding,
-  4: Ban,
-};
+export { CROWD_GLYPHS } from "@/src/utils/crowding";
 
 const OPTIONS: { level: CrowdingLevel; label: string; sub: string }[] = [
   { level: 1, label: "Plenty of seats", sub: "Easy to find a spot" },
