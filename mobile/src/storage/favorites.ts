@@ -42,6 +42,10 @@ export async function addFavoritePlace(place: Omit<SavedPlace, "id">): Promise<S
 export async function removeFavoritePlace(id: string): Promise<void> {
   const places = (await getFavoritePlaces()).filter((p) => p.id !== id);
   await setFavoritePlaces(places);
+  // Don't leave "after last class" pointing at a place that no longer exists.
+  if ((await getAfterLastClassPlaceId()) === id) {
+    await AsyncStorage.removeItem(AFTER_LAST_CLASS_KEY);
+  }
 }
 
 export async function getFavoriteStops(): Promise<FavoriteStop[]> {

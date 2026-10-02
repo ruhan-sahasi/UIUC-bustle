@@ -13,10 +13,12 @@ function dateKey(date: Date): string {
 export async function markClassAsWalkedToday(classId: string): Promise<void> {
   const key = dateKey(new Date());
   try {
-    const raw = await AsyncStorage.getItem(key);
-    const ids: string[] = raw ? JSON.parse(raw) : [];
+    const ids = await getWalkedClassIdsToday();
     if (!ids.includes(classId)) ids.push(classId);
     await AsyncStorage.setItem(key, JSON.stringify(ids));
+    // One key per day was written and never removed; only today's matters.
+    const stale = (await AsyncStorage.getAllKeys()).filter((k) => k.startsWith(KEY_PREFIX) && k !== key);
+    if (stale.length) await AsyncStorage.multiRemove(stale);
   } catch (_) {}
 }
 

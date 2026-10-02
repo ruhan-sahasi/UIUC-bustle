@@ -14,7 +14,9 @@ export async function getStopThresholds(): Promise<StopThreshold[]> {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return [];
-    return JSON.parse(raw) as StopThreshold[];
+    const parsed = JSON.parse(raw);
+    // A non-array value would make findIndex/filter throw in the writers.
+    return Array.isArray(parsed) ? (parsed as StopThreshold[]) : [];
   } catch {
     return [];
   }
