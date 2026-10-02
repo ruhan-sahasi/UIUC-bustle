@@ -43,36 +43,38 @@ Copy the template and fill in your keys (see `backend/.env.example` for the full
 cp .env.example .env
 ```
 
-Create `backend/.env`:
+The essentials for local development:
 
 ```env
+# Postgres (create the DB, then run `alembic upgrade head` once)
+DATABASE_URL=postgresql://localhost:5432/uiuc
+
 # Required for live bus departures and vehicle positions
 MTD_API_KEY=your_cumtd_api_key
 
 # Optional — enables AI route ranking, walk encouragement, EOD reports
 CLAUDE_API_KEY=your_anthropic_api_key
 
-# Leave defaults for local dev
-APP_DB_PATH=data/app.db
-STOPS_DB_PATH=data/stops.db
 CORS_ORIGINS=http://localhost:8081,exp://localhost:8081
 ```
 
 Get an MTD key free at [developer.cumtd.com](https://developer.cumtd.com).
 
-### Seed data
-
-Run these once (or whenever you want fresh data):
+### Database & seed data
 
 ```bash
-# 1. Load MTD stop locations into stops.db (~3 500 stops)
-python scripts/load_stops.py
+# Create the schema (re-run after pulling new migrations)
+alembic upgrade head
 
-# 2. Seed 636 UIUC campus buildings from OpenStreetMap into app.db
-python scripts/seed_buildings_from_osm.py
-
-# 3. (Optional) Load GTFS schedule data
+# Load MTD GTFS data into data/gtfs.db. On startup the API seeds the
+# Postgres stops table from it whenever that table is empty.
 python scripts/load_gtfs.py
+
+# Seed UIUC campus buildings into Postgres from the bundled CSV
+python scripts/seed_buildings.py
+
+# (Optional) Refresh buildings from OpenStreetMap
+python scripts/seed_buildings_from_osm.py
 ```
 
 ### Start the server
@@ -146,9 +148,15 @@ Then open **Settings** tab in the app and set the API URL to your machine's loca
 ## 3. Running tests
 
 ```bash
+# Backend — DB-backed tests skip unless TEST_DATABASE_URL points at a
+# migrated Postgres (see the CI workflow for the exact setup)
 cd backend
-python -m pytest tests/ -q
-# 35 passed
+python -m pytest -q
+
+# Mobile — unit tests and typecheck
+cd mobile
+npm test
+npm run typecheck
 ```
 
 ---
@@ -174,24 +182,25 @@ python -m pytest tests/ -q
 backend/
   main.py                        FastAPI app + all route handlers
   settings.py                    Pydantic settings (reads .env)
+  alembic/                       Postgres schema migrations
   requirements.txt
   data/
     buildings_seed.csv           636 OSM buildings (regenerate with seed_buildings_from_osm.py)
     stops_placeholder.csv        Placeholder — replaced by load_stops.py
   scripts/
-    load_stops.py                Download MTD stops → stops.db
-    seed_buildings_from_osm.py   Query Overpass API → buildings_seed.csv + app.db
-    seed_buildings.py            Re-seed app.db from an existing CSV
+    load_stops.py                Load a custom stops CSV into Postgres
+    seed_buildings_from_osm.py   Query Overpass API → buildings_seed.csv + Postgres
+    seed_buildings.py            Seed Postgres buildings from an existing CSV
     load_gtfs.py                 Download GTFS zip → gtfs.db
   src/
     ai/                          Claude client, planner, encouragement
-    data/                        SQLite repos (buildings, stops, GTFS)
+    data/                        Postgres repos (buildings, stops, crowding) + GTFS reader
     middleware/                  API key auth, request logging
     monitoring/                  Metrics endpoint
     mtd/                         MTD API client (departures, vehicles)
     recommendation/              Route scoring + heuristic engine
     schedule/                    Pydantic models for class schedule
-  tests/                         pytest suite (35 tests)
+  tests/                         pytest suite
 
 mobile/
   app/
