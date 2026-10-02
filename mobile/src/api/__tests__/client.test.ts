@@ -153,6 +153,44 @@ describe("retry policy", () => {
     expect((global.fetch as jest.Mock).mock.calls.length).toBe(1);
   });
 
+  it("does NOT replay a POST after an ambiguous 502", async () => {
+    // The gateway may have timed out after the class row was written.
+    (global.fetch as jest.Mock).mockResolvedValue(jsonResponse({ detail: "bad gateway" }, 502));
+
+    await expect(
+      createClass(BASE, {
+        title: "CS 233",
+        days_of_week: ["MON"],
+        start_time_local: "09:00",
+        building_id: "siebel",
+      }),
+    ).rejects.toBeTruthy();
+
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(1);
+  });
+
+  it("does replay a POST on 503, which means the server never acted on it", async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(jsonResponse({ detail: "unavailable" }, 503))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          class_id: "c1",
+          title: "CS 233",
+          days_of_week: ["MON"],
+          start_time_local: "09:00",
+          building_id: "siebel",
+        }, 201),
+      );
+
+    await createClass(BASE, {
+      title: "CS 233",
+      days_of_week: ["MON"],
+      start_time_local: "09:00",
+      building_id: "siebel",
+    });
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(2);
+  });
+
   it("retries an idempotent GET after a network failure", async () => {
     (global.fetch as jest.Mock)
       .mockRejectedValueOnce(new TypeError("Network request failed"))

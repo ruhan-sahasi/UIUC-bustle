@@ -165,10 +165,16 @@ async function apiErrorFromResponse(res: Response, pathLabel: string, fallback: 
 async function fetchWithRetry(
   url: string,
   pathLabel: string,
-  init?: RequestInit & { signal?: AbortSignal; apiKey?: string | null; retryOn429?: boolean }
+  init?: RequestInit & {
+    signal?: AbortSignal;
+    apiKey?: string | null;
+    retryOn429?: boolean;
+    /** Opt a read-only POST (a query with a JSON body) into GET-style retries. */
+    idempotent?: boolean;
+  }
 ): Promise<Response> {
-  const { signal: userSignal, apiKey, retryOn429 = true, ...rest } = init ?? {};
-  const replayable = isIdempotent(rest.method);
+  const { signal: userSignal, apiKey, retryOn429 = true, idempotent, ...rest } = init ?? {};
+  const replayable = idempotent ?? isIdempotent(rest.method);
   const headers = await mergeHeaders(url, rest, apiKey);
   let requestInit: RequestInit & { signal?: AbortSignal } = { ...rest, headers };
   let lastError: unknown;
@@ -191,7 +197,13 @@ async function fetchWithRetry(
         log.warn(`api_response path=${pathLabel} status=${res.status}`, { path: pathLabel, status: res.status });
         // 429 is backpressure on most routes, but some use it as a definitive
         // rejection; retrying those only delays the answer and burns the budget.
-        const statusRetryable = isRetryable(res.status, null) && (retryOn429 || res.status !== 429);
+        // For a write, only replay statuses that mean the server did not act
+        // on it (429 throttled, 503 unavailable). A 500/502/504 may have
+        // landed after the row was written, so re-sending could duplicate it.
+        const statusRetryable =
+          isRetryable(res.status, null) &&
+          (retryOn429 || res.status !== 429) &&
+          (replayable || res.status === 429 || res.status === 503);
         if (attempt < MAX_RETRIES && statusRetryable) {
           const backoff = Math.min(RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 300, RETRY_MAX_MS);
           await delay(backoff);
@@ -342,6 +354,7 @@ export async function fetchRecommendation(
   const base = baseUrl.replace(/\/$/, "");
   const res = await fetchWithRetry(`${base}/recommendation`, "/recommendation", {
     method: "POST",
+    idempotent: true,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: options?.signal,
@@ -519,6 +532,7 @@ export async function fetchPlacesAutocomplete(
   const base = baseUrl.replace(/\/$/, "");
   const res = await fetchWithRetry(`${base}/places/autocomplete`, "/places/autocomplete", {
     method: "POST",
+    idempotent: true,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ q: query, session_token: sessionToken }),
     signal: options?.signal,
