@@ -193,25 +193,31 @@ export default function SignInScreen() {
   async function handleGoogleSignIn() {
     setLoading(true);
     setError(null);
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: REDIRECT_URI },
-    });
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-      return;
-    }
-    if (data.url) {
-      const result = await WebBrowser.openAuthSessionAsync(data.url, REDIRECT_URI);
-      if (result.type === "success" && result.url) {
-        // Supabase v2 PKCE flow: exchange the auth code for a session
-        const exchangeError = await completeAuthFromUrl(result.url);
-        if (exchangeError) setError(exchangeError);
-        // onAuthStateChange in useAuth will pick up the new session automatically
+    // try/finally: openAuthSessionAsync rejects if another auth session is
+    // already open, and without the finally the buttons stayed disabled.
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: REDIRECT_URI },
+      });
+      if (error) {
+        setError(error.message);
+        return;
       }
+      if (data.url) {
+        const result = await WebBrowser.openAuthSessionAsync(data.url, REDIRECT_URI);
+        if (result.type === "success" && result.url) {
+          // Supabase v2 PKCE flow: exchange the auth code for a session
+          const exchangeError = await completeAuthFromUrl(result.url);
+          if (exchangeError) setError(exchangeError);
+          // onAuthStateChange in useAuth will pick up the new session automatically
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't start Google sign-in. Try again.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   async function handleMagicLink() {
@@ -221,15 +227,20 @@ export default function SignInScreen() {
     }
     setLoading(true);
     setError(null);
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: REDIRECT_URI },
-    });
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-    } else {
-      setMagicLinkSent(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: email.trim(),
+        options: { emailRedirectTo: REDIRECT_URI },
+      });
+      if (error) {
+        setError(error.message);
+      } else {
+        setMagicLinkSent(true);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't send the sign-in link. Check your connection.");
+    } finally {
+      setLoading(false);
     }
   }
 

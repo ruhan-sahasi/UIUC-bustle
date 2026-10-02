@@ -57,12 +57,17 @@ export function useAuth() {
   }, [queryClient]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      publishUserId(session?.user?.id ?? null);
-      setLoading(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        publishUserId(session?.user?.id ?? null);
+      })
+      // A failed restore (corrupt secure-store entry, keychain error) leaves
+      // the user signed out; it must not keep RootLayout on the splash forever.
+      .catch(() => {})
+      .finally(() => setLoading(false));
 
     const {
       data: { subscription },
