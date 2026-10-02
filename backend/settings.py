@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     mtd_api_key: str = ""  # Champaign-Urbana MTD Developer API key (get at developer.cumtd.com)
     database_url: str = ""  # PostgreSQL connection URL (Railway sets DATABASE_URL automatically)
 
-    # Optional API key auth (for production / multi-tenant). When enabled, requests must include X-API-Key or Authorization: Bearer <key>.
+    # Optional API key auth (for production / multi-tenant). When enabled, requests must include an X-API-Key header (Authorization is reserved for user JWTs).
     api_key_required: bool = False
     api_keys: str = ""  # Comma-separated list of valid keys (no spaces). Example: API_KEYS=key1,key2
 

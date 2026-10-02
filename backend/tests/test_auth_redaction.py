@@ -3,8 +3,9 @@
 The auth-failure warning in src.middleware.auth used to log the raw request
 path, so a rejected request to /share/trips/<token>/status put the capability
 token straight into the logs — defeating the redaction in request_logging.py.
-These tests exercise a 401 against a token-bearing path and assert the token
-never reaches the log record. /metrics is also no longer auth-exempt.
+These tests exercise a 401 against a token-bearing path (the share PATCH; the
+public GET status poll is auth-exempt) and assert the token never reaches the
+log record. /metrics is also no longer auth-exempt.
 """
 import logging
 
@@ -25,6 +26,7 @@ def _make_client() -> TestClient:
     app = Starlette(
         routes=[
             Route("/share/trips/{token}/status", ok),
+            Route("/share/trips/{token}", ok, methods=["PATCH"]),
             Route("/metrics", ok),
             Route("/health", ok),
         ]
@@ -41,7 +43,7 @@ class TestAuthFailureLogRedaction:
     def test_401_warning_does_not_log_share_token(self, caplog):
         client = _make_client()
         with caplog.at_level(logging.WARNING, logger="src.middleware.auth"):
-            response = client.get(f"/share/trips/{RAW_TOKEN}/status")
+            response = client.patch(f"/share/trips/{RAW_TOKEN}")
         assert response.status_code == 401
         # The raw capability token must never appear anywhere in the log output.
         assert RAW_TOKEN not in caplog.text
@@ -51,7 +53,7 @@ class TestAuthFailureLogRedaction:
     def test_401_warning_still_identifies_route_shape(self, caplog):
         client = _make_client()
         with caplog.at_level(logging.WARNING, logger="src.middleware.auth"):
-            client.get(f"/share/trips/{RAW_TOKEN}/status")
+            client.patch(f"/share/trips/{RAW_TOKEN}")
         assert "auth_failed" in caplog.text
 
 

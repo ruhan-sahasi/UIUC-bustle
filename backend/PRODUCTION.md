@@ -15,7 +15,7 @@ Copy and adjust for production. Development defaults are fine for local use.
 ## Monitoring
 
 - **Request logging**: Every request is logged with `method`, `path`, `status`, `duration_ms`, `client` (IP). Use structured logging (e.g. JSON) by configuring Python `logging` handlers.
-- **Metrics**: `GET /metrics` returns JSON with `requests_total`, `requests_2xx`, `requests_4xx`, `requests_5xx`, `uptime_seconds`. Exempt from rate limit and API key. For production, consider a Prometheus exporter or your APM’s agent instead of this in-memory counter.
+- **Metrics**: `GET /metrics` returns JSON with `requests_total`, `requests_2xx`, `requests_3xx`, `requests_4xx`, `requests_5xx`, `uptime_seconds`. Exempt from rate limiting, but requires the API key when `API_KEY_REQUIRED=true`. For production, consider a Prometheus exporter or your APM’s agent instead of this in-memory counter.
 - **Health**: `GET /health` (liveness) and `GET /health/ready` (readiness — verifies the database is reachable) are both exempt from rate limit and auth. Point load balancer / Railway health checks at `/health/ready`.
 
 ## CORS
@@ -37,7 +37,7 @@ When you need to restrict access or support multiple tenants:
    API_KEYS=your-secret-key,another-key
    ```
 2. Clients must send the header `X-API-Key: your-secret-key`. `Authorization: Bearer` is **not** accepted for API keys — the `Authorization` header is reserved for Supabase user JWTs and is never treated as an API key.
-3. **Exempt paths** (no key required): `/health`, `/health/ready`, `/metrics`.
+3. **Exempt paths** (no key required): `/health`, `/health/ready`, and the public share page — `GET /t/{token}` plus the `GET /share/trips/{token}/status` poll it makes. Those are opened in a recipient's browser, which has no API key; the unguessable token is their access control. `/metrics` **does** require the key.
 4. Invalid or missing key → `401` with `{"detail": "Invalid or missing API key. Provide X-API-Key header."}`.
 
 **Mobile app**: In Settings, enter the API key and save; the app sends it on all API requests when set.

@@ -1,5 +1,6 @@
 """Optional API key auth: when API_KEY_REQUIRED=true, require X-API-Key header."""
 import logging
+import re
 import secrets
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -10,6 +11,17 @@ from src.middleware.request_logging import _redact_path
 logger = logging.getLogger(__name__)
 
 AUTH_EXEMPT_PATHS = {"/health", "/health/ready"}
+
+# The public share page is opened by a friend's browser, which has no API key.
+# Its HTML and the status poll it makes are already gated by an unguessable
+# capability token, so they bypass the key check (GET only).
+_PUBLIC_GET_RE = re.compile(r"^/(t/[^/]+|share/trips/[^/]+/status)$")
+
+
+def is_exempt(method: str, path: str) -> bool:
+    if path in AUTH_EXEMPT_PATHS:
+        return True
+    return method in ("GET", "HEAD") and bool(_PUBLIC_GET_RE.match(path))
 
 
 def get_valid_api_keys(api_keys_str: str) -> set[str]:
@@ -39,7 +51,7 @@ class OptionalAPIKeyMiddleware(BaseHTTPMiddleware):
         return any(secrets.compare_digest(key, valid) for valid in self.valid_keys)
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in AUTH_EXEMPT_PATHS:
+        if is_exempt(request.method, request.url.path):
             return await call_next(request)
         if not self.api_key_required:
             return await call_next(request)
