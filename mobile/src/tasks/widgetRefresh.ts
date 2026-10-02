@@ -7,10 +7,9 @@
  * Called:
  *   1. App comes to foreground (AppState 'active')
  *   2. Every background fetch cycle (inside notificationRefresh task)
- *   3. After a new walk is logged (walk-nav.tsx on completion)
  */
 
-import { getActivityForDate, getActivityLog, todayDateString, WEEKLY_STEP_GOAL } from '@/src/storage/activityLog';
+import { dateStringForOffset, getActivityForDate, getActivityLog, getWeeklyStepGoal, todayDateString } from '@/src/storage/activityLog';
 import { getLastKnownHomeData } from '@/src/storage/lastKnownHome';
 import { getStoredApiKey } from '@/src/storage/apiKey';
 import { getStoredApiBaseUrl } from '@/src/storage/apiUrl';
@@ -21,34 +20,17 @@ import { arriveByIsoToday } from '@/src/utils/arriveBy';
 import { getNextClassToday, getTodayCode } from '@/src/utils/nextClass';
 import type { ScheduleClass } from '@/src/api/types';
 import { writeWidgetData, type WidgetData, type WidgetTodayClass } from '@/src/utils/widgetDataWriter';
-
-function padTime(h: number, m: number): string {
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-function departTimeFromDepart(startTime: string, departInMins: number): string {
-  const [sh, sm] = startTime.split(':').map(Number);
-  const total = (sh ?? 0) * 60 + (sm ?? 0) - Math.round(departInMins);
-  const wrapped = ((total % 1440) + 1440) % 1440;
-  return padTime(Math.floor(wrapped / 60), wrapped % 60);
-}
-
-function leaveInMinutes(startTime: string, departInMins: number): number {
-  const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
-  const [sh, sm] = startTime.split(':').map(Number);
-  const classMins = (sh ?? 0) * 60 + (sm ?? 0);
-  return classMins - Math.round(departInMins) - nowMins;
-}
+import { clockTimeAfter, clockTimeBefore, minutesUntilBefore, padTime } from '@/src/utils/leaveTime';
 
 export async function refreshWidgetData(): Promise<void> {
   try {
-    const [apiBaseUrl, apiKey, walkingModeId, bufferMinutes, lastKnown] = await Promise.all([
+    const [apiBaseUrl, apiKey, walkingModeId, bufferMinutes, lastKnown, weeklyGoal] = await Promise.all([
       getStoredApiBaseUrl(),
       getStoredApiKey(),
       getStoredWalkingMode(),
       getStoredBufferMinutes(),
       getLastKnownHomeData(),
+      getWeeklyStepGoal(),
     ]);
 
     const walkingSpeedMps = getMpsForMode(walkingModeId);
@@ -60,10 +42,12 @@ export async function refreshWidgetData(): Promise<void> {
       getActivityLog(),
     ]);
     const stepsToday = todayEntries.reduce((s, e) => s + e.stepCount, 0);
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 6);
+    // Last 7 calendar days including today. YYYY-MM-DD strings compare in
+    // date order; comparing against "now minus 6 days" kept the time of day
+    // and silently dropped the oldest day.
+    const weekStart = dateStringForOffset(6);
     const weeklySteps = fullLog
-      .filter((e) => new Date(e.date + 'T00:00:00') >= weekStart)
+      .filter((e) => e.date >= weekStart)
       .reduce((s, e) => s + e.stepCount, 0);
 
     // Classes
@@ -89,7 +73,7 @@ export async function refreshWidgetData(): Promise<void> {
       name: c.title,
       startTime: c.start_time_local,
       building: c.destination_name ?? c.building_id,
-      recommendedDepartTime: departTimeFromDepart(c.start_time_local, 15),
+      recommendedDepartTime: clockTimeBefore(c.start_time_local, 15),
     }));
 
     let widgetNextClass: WidgetData['nextClass'] = null;
@@ -122,14 +106,13 @@ export async function refreshWidgetData(): Promise<void> {
 
         const bestOpt = rec.options?.[0];
         if (bestOpt) {
-          const leaveIn = leaveInMinutes(nextClass.start_time_local, bestOpt.depart_in_minutes);
-          const departT = departTimeFromDepart(nextClass.start_time_local, bestOpt.depart_in_minutes);
+          // depart_in_minutes counts from now, not back from the class start.
           widgetNextClass = {
             name: nextClass.title,
             startTime: nextClass.start_time_local,
             building: nextClass.destination_name ?? nextClass.building_id,
-            leaveByTime: departT,
-            leaveInMinutes: leaveIn,
+            leaveByTime: clockTimeAfter(now, bestOpt.depart_in_minutes),
+            leaveInMinutes: Math.max(0, Math.round(bestOpt.depart_in_minutes)),
           };
 
           const rideStep = bestOpt.steps.find((s) => s.type === 'RIDE');
@@ -153,8 +136,8 @@ export async function refreshWidgetData(): Promise<void> {
           name: nextClass.title,
           startTime: nextClass.start_time_local,
           building: nextClass.destination_name ?? nextClass.building_id,
-          leaveByTime: departTimeFromDepart(nextClass.start_time_local, 15),
-          leaveInMinutes: leaveInMinutes(nextClass.start_time_local, 15),
+          leaveByTime: clockTimeBefore(nextClass.start_time_local, 15),
+          leaveInMinutes: minutesUntilBefore(nextClass.start_time_local, 15, now),
         };
       }
     }
@@ -164,8 +147,8 @@ export async function refreshWidgetData(): Promise<void> {
       nextBus: widgetNextBus,
       todayClasses: todayClassEntries,
       stepsToday,
-      weeklyStepGoal: WEEKLY_STEP_GOAL,
-      weeklyStepsProgress: Math.min(1, weeklySteps / WEEKLY_STEP_GOAL),
+      weeklyStepGoal: weeklyGoal,
+      weeklyStepsProgress: Math.min(1, weeklySteps / weeklyGoal),
       lastUpdated: Date.now(),
       isDataFresh: true,
     };
