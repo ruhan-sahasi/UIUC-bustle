@@ -35,6 +35,7 @@ import { Badge } from "@/src/components/ui/Badge";
 import { Button } from "@/src/components/ui/Button";
 import { DepartureRow } from "@/src/components/ui/DepartureRow";
 import { EmptyState } from "@/src/components/ui/EmptyState";
+import { departureKeys } from "@/src/utils/departureKey";
 import { Bus, CloudOff, Footprints, MapPin, Search, X } from "lucide-react-native";
 
 /** Live vehicles chip — the shared Badge pairs its breathing dot with text and respects reduce-motion. */
@@ -730,6 +731,7 @@ export default function MapScreen() {
   }
   const sheetStop = selectedStop ?? lastStopRef.current;
   const sheetDepartures = selectedStop ? departures : lastDeparturesRef.current;
+  const sheetDepartureKeys = useMemo(() => departureKeys(sheetDepartures.slice(0, 8)), [sheetDepartures]);
   // Only surface the query error while a stop is actually selected; a closing
   // sheet keeps showing its latched contents, never a late-arriving error.
   const sheetDeparturesError = !!selectedStop && departuresError;
@@ -1126,7 +1128,7 @@ export default function MapScreen() {
                 <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={8}>
                   {sheetDepartures.slice(0, 8).map((d, i) => (
                     <DepartureRow
-                      key={i}
+                      key={sheetDepartureKeys[i]}
                       route={d.route}
                       headsign={d.headsign || "—"}
                       expectedMins={d.expected_mins}

@@ -8,10 +8,11 @@ import { FadeInView, PressableScale, Skeleton, Stagger } from "@/src/components/
 import { STAGGER } from "@/src/constants/motion";
 import { theme } from "@/src/constants/theme";
 import { useApiBaseUrl } from "@/src/hooks/useApiBaseUrl";
+import { departureKeys } from "@/src/utils/departureKey";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Bus, CloudOff, Footprints } from "lucide-react-native";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RefreshControl,
   ScrollView,
@@ -124,6 +125,7 @@ export default function TripScreen() {
   const { stop_id, stop_name } = useLocalSearchParams<{ stop_id: string; stop_name?: string }>();
   const router = useRouter();
   const [departures, setDepartures] = useState<DepartureItem[]>([]);
+  const keys = useMemo(() => departureKeys(departures), [departures]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -256,7 +258,7 @@ export default function TripScreen() {
               */}
               <Stagger step={STAGGER.listStep} cap={STAGGER.listCap} dy={10}>
                 {departures.map((d, i) => (
-                  <RouteIdentityRow key={i} departure={d} />
+                  <RouteIdentityRow key={keys[i]} departure={d} />
                 ))}
               </Stagger>
             </View>

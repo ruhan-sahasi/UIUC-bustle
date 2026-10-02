@@ -85,6 +85,7 @@ import {
 import { CollapsingHeader } from "@/src/components/ui/CollapsingHeader";
 import Animated, { useAnimatedStyle, type SharedValue } from "react-native-reanimated";
 import { EmptyState } from "@/src/components/ui/EmptyState";
+import { departureKeys } from "@/src/utils/departureKey";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ArrowRight, Clock, Footprints, MapPin, Search, Star, X } from "lucide-react-native";
@@ -1953,13 +1954,15 @@ export default function HomeScreen() {
                     <Text style={styles.depText}>No departures due</Text>
                   )
                 ) : (
-                  (departuresByStop[stop.stop_id] ?? []).slice(0, MAX_DEPARTURES_PER_STOP).map((d, i) => {
+                  (departuresByStop[stop.stop_id] ?? []).slice(0, MAX_DEPARTURES_PER_STOP).map((d, i, shown) => {
+                    // At most MAX_DEPARTURES_PER_STOP rows, so recomputing per row is trivial.
+                    const keys = departureKeys(shown);
                     const fetchedAt = departures.updatedAtByStop[stop.stop_id] ?? 0;
                     const isStale = d.is_realtime && fetchedAt > 0 && Date.now() - fetchedAt > 2 * 60 * 1000;
                     const showDelayed = d.delay_status === "delayed" && d.delay_mins != null && d.delay_mins >= 3;
                     const showEarly = d.delay_status === "early" && d.delay_mins != null && Math.abs(d.delay_mins) >= 2;
                     return (
-                      <View key={i}>
+                      <View key={keys[i]}>
                         <Pressable
                           onPress={() => router.push({ pathname: "/route-tracker", params: { route_id: d.route, route_name: d.headsign } })}
                           // NOT an a11y element itself: a label here would hide
