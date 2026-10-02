@@ -91,11 +91,46 @@ def _scrub_sentry_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, _redact_path(parts.path), query, ""))
 
 
+# Request headers that carry a credential Sentry's default denylist misses.
+_SENTRY_SECRET_HEADERS = {"x-edit-token", "x-api-key"}
+
+
+def _scrub_key_pairs(data: dict) -> dict:
+    """Redact key= values in any string field (http.query, url, …)."""
+    for k, v in list(data.items()):
+        if isinstance(v, str) and _SENTRY_KEY_PAIR_RE.search(v):
+            data[k] = _SENTRY_KEY_PAIR_RE.sub(r"\1<redacted>", v)
+    return data
+
+
+def _sentry_before_breadcrumb(crumb: dict, hint: dict) -> dict:
+    # The httpx integration turns every outbound call into a breadcrumb whose
+    # data holds the full query string, MTD's key= included. Those ride along
+    # on any later error event in the same scope.
+    data = crumb.get("data")
+    if isinstance(data, dict):
+        crumb["data"] = _scrub_key_pairs(data)
+    if isinstance(crumb.get("message"), str):
+        crumb["message"] = _SENTRY_KEY_PAIR_RE.sub(r"\1<redacted>", crumb["message"])
+    return crumb
+
+
 def _sentry_before_send(event: dict, hint: dict) -> dict:
     request = event.get("request") or {}
     if request.get("url"):
         request["url"] = _scrub_sentry_url(str(request["url"]))
+    headers = request.get("headers")
+    if isinstance(headers, dict):
+        for name in list(headers):
+            if name.lower() in _SENTRY_SECRET_HEADERS:
+                headers[name] = "[Filtered]"
+    if request:
         event["request"] = request
+    breadcrumbs = event.get("breadcrumbs")
+    values = breadcrumbs.get("values") if isinstance(breadcrumbs, dict) else breadcrumbs
+    for crumb in values or []:
+        if isinstance(crumb, dict):
+            _sentry_before_breadcrumb(crumb, {})
     return event
 
 
@@ -110,10 +145,7 @@ def _sentry_before_send_transaction(event: dict, hint: dict) -> dict:
             data.pop("http.query", None)
             data.pop("url", None)
             span["description"] = description.partition("?")[0]
-        for k, v in list(data.items()):
-            if isinstance(v, str) and _SENTRY_KEY_PAIR_RE.search(v):
-                data[k] = _SENTRY_KEY_PAIR_RE.sub(r"\1<redacted>", v)
-        span["data"] = data
+        span["data"] = _scrub_key_pairs(data)
     return event
 
 
@@ -125,6 +157,7 @@ if settings.sentry_dsn:
         traces_sampler=_sentry_traces_sampler,
         send_default_pii=False,
         before_send=_sentry_before_send,
+        before_breadcrumb=_sentry_before_breadcrumb,
         before_send_transaction=_sentry_before_send_transaction,
     )
 
