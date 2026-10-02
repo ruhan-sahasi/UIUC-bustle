@@ -3,8 +3,11 @@ __pycache__
 *.pyc
 *.pyo
 .env
-data/app.db
-data/stops.db
-data/gtfs.db
+# Local databases; gtfs.db is rebuilt inside the image
+data/*.db
 .pytest_cache
+.ruff_cache
+.mypy_cache
+.env.*
+!.env.example
 tests/
