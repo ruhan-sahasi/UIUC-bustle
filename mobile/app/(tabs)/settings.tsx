@@ -217,7 +217,7 @@ export default function SettingsScreen() {
     } finally {
       setTestingConnection(false);
     }
-  }, [input, isValidApiUrl]);
+  }, [input, apiKeyInput, isValidApiUrl]);
 
   // Render-only derived values for the steppers / segmented control
   const bufferValue = Math.round(bufferSlider);
@@ -602,7 +602,12 @@ export default function SettingsScreen() {
               label="Send feedback"
               variant="ghost"
               icon={Mail}
-              onPress={() => Linking.openURL("mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback")}
+              onPress={() =>
+                // Rejects when no mail app is configured (common on simulators).
+                Linking.openURL("mailto:support@uiucbus.app?subject=UIUC%20Bus%20App%20Feedback").catch(() =>
+                  Alert.alert("No email app", "Email us at support@uiucbus.app."),
+                )
+              }
             />
           </View>
         </View>
