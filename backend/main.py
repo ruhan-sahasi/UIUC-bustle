@@ -208,6 +208,10 @@ LAT_MIN, LAT_MAX = -90.0, 90.0
 LNG_MIN, LNG_MAX = -180.0, 180.0
 RADIUS_M_MIN, RADIUS_M_MAX = 100, 5000
 DEPARTURES_MINUTES_MIN, DEPARTURES_MINUTES_MAX = 1, 120
+# MTD's GetDeparturesByStop looks at most 60 minutes ahead. Larger requests are
+# still accepted (older clients send them) but clamped so they share a cache entry.
+MTD_LOOKAHEAD_MAX_MINUTES = 60
+AUTOCOMPLETE_LIMIT_MAX = 20
 STOP_ID_MAX_LEN = 64
 STOP_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_:\-]+$")  # ':' — MTD child stop points (e.g. IU:1)
 # One authenticated user can otherwise insert unbounded schedule rows (storage
@@ -695,6 +699,9 @@ async def autocomplete(request: Request, q: str = "", limit: int = 8):
         return {"results": []}
     if len(query) > 200:
         raise HTTPException(status_code=400, detail="Query too long")
+    # A negative limit reached Postgres as LIMIT -1 (a 500) and sliced results
+    # from the wrong end; clamp like /buildings/search does.
+    limit = max(1, min(limit, AUTOCOMPLETE_LIMIT_MAX))
 
     # Parallel: buildings + Google Places (or Overpass POI + Nominatim fallback)
     try:
@@ -777,7 +784,7 @@ async def geocode(request: Request, q: str = ""):
 
 
 @app.get("/stops/nearby", response_model=NearbyStopsResponse)
-async def stops_nearby(request: Request, lat: float = 0.0, lng: float = 0.0, radius_m: int = 800):
+async def stops_nearby(request: Request, lat: float, lng: float, radius_m: int = 800):
     _validate_lat_lng(lat, lng)
     _validate_uiuc_region(lat, lng)
     if not (RADIUS_M_MIN <= radius_m <= RADIUS_M_MAX):
@@ -801,13 +808,14 @@ async def get_departures(request: Request, stop_id: str, minutes: int = 60):
     if not stop_id or len(stop_id) > STOP_ID_MAX_LEN or not STOP_ID_PATTERN.match(stop_id):
         raise HTTPException(
             status_code=400,
-            detail="Invalid stop_id (alphanumeric, underscore, hyphen only; max 64 chars).",
+            detail="Invalid stop_id (letters, digits, underscore, hyphen, colon only; max 64 chars).",
         )
     if not (DEPARTURES_MINUTES_MIN <= minutes <= DEPARTURES_MINUTES_MAX):
         raise HTTPException(
             status_code=400,
             detail=f"minutes must be between {DEPARTURES_MINUTES_MIN} and {DEPARTURES_MINUTES_MAX}",
         )
+    minutes = min(minutes, MTD_LOOKAHEAD_MAX_MINUTES)
     logger.info("telemetry route=departures stop_id=%s minutes=%s", stop_id, minutes)
     client: MTDClient | None = getattr(app.state, "mtd_client", None)
     if not client:

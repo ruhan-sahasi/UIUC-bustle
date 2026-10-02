@@ -52,3 +52,14 @@ def test_departures_empty_is_scheduled():
         main.app.state.mtd_client = None
     assert r.status_code == 200
     assert r.json()["source"] == "scheduled"
+
+
+def test_minutes_beyond_mtd_lookahead_are_clamped():
+    client = _client_with_departures([_dep(True)])
+    try:
+        r = client.get("/stops/IT/departures", params={"minutes": 120})
+        called_minutes = main.app.state.mtd_client.get_departures_by_stop.await_args
+    finally:
+        main.app.state.mtd_client = None
+    assert r.status_code == 200
+    assert 60 in called_minutes.args or called_minutes.kwargs.get("minutes") == 60
