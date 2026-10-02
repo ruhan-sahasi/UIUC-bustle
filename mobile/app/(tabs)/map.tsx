@@ -894,6 +894,7 @@ export default function MapScreen() {
         <View style={styles.searchRow}>
           <Search size={16} color={theme.colors.textMuted} style={{ marginLeft: 12, marginRight: 4 }} />
           <TextInput
+            accessibilityLabel="Search restaurants, buildings, and places"
             style={styles.searchInput}
             placeholder="Search restaurants, buildings, places..."
             placeholderTextColor={theme.colors.textMuted}

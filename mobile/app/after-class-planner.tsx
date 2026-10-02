@@ -97,6 +97,7 @@ export default function AfterClassPlannerScreen() {
         <Text style={styles.intro}>What are your plans after class?</Text>
       </FadeInView>
       <TextInput
+        accessibilityLabel="Your plans after class"
         style={styles.input}
         value={freeText}
         onChangeText={setFreeText}

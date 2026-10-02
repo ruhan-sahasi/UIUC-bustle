@@ -489,6 +489,7 @@ export default function ScheduleScreen() {
               <Text style={styles.sectionEyebrow}>Class details</Text>
               <Text style={styles.label}>Title</Text>
               <TextInput
+                accessibilityLabel="Class title"
                 style={styles.input}
                 value={title}
                 onChangeText={(text) => setTitle(text.slice(0, 60))}
@@ -522,6 +523,7 @@ export default function ScheduleScreen() {
                 <View style={styles.timeCol}>
                   <Text style={styles.label}>Start time (HH:MM)</Text>
                   <TextInput
+                    accessibilityLabel="Start time, 24-hour, for example 09:00"
                     style={[styles.input, styles.timeInput]}
                     value={time}
                     onChangeText={setTime}
@@ -533,6 +535,7 @@ export default function ScheduleScreen() {
                 <View style={styles.timeCol}>
                   <Text style={styles.label}>End time (optional)</Text>
                   <TextInput
+                    accessibilityLabel="End time, optional, 24-hour, for example 10:15"
                     style={[styles.input, styles.timeInput]}
                     value={endTime}
                     onChangeText={setEndTime}
@@ -547,6 +550,7 @@ export default function ScheduleScreen() {
               <Text style={styles.sectionEyebrow}>Location</Text>
               <Text style={styles.label}>Class location (address or place)</Text>
               <TextInput
+                accessibilityLabel="Class location, address or place"
                 style={styles.input}
                 value={locationQuery}
                 onChangeText={onLocationQueryChange}

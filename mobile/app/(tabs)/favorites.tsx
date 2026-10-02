@@ -234,6 +234,7 @@ export default function FavoritesScreen() {
         {addingPlace ? (
           <View style={styles.addCard}>
             <TextInput
+              accessibilityLabel="New place name"
               placeholder="Place name (e.g. Gym, McDonald's)"
               placeholderTextColor={theme.colors.textMuted}
               style={styles.input}

@@ -151,7 +151,11 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
         end={{ x: 0, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
-      <View style={styles.bar} onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}>
+      <View
+        style={styles.bar}
+        accessibilityRole="tablist"
+        onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
+      >
         {/* Gliding pill indicator */}
         {slotWidth > 0 && (
           <Animated.View style={[styles.indicator, { width: slotWidth }, indicatorStyle]} pointerEvents="none">
@@ -169,7 +173,8 @@ export function AnimatedTabBar({ state, descriptors, navigation }: BottomTabBarP
             <Pressable
               key={route.key}
               style={styles.tab}
-              accessibilityRole="button"
+              // "tab" + tablist lets VoiceOver announce "Schedule, tab, 2 of 5".
+              accessibilityRole="tab"
               accessibilityState={{ selected: focused }}
               accessibilityLabel={options.tabBarAccessibilityLabel ?? label}
               testID={options.tabBarButtonTestID}

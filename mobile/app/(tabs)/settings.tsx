@@ -282,6 +282,7 @@ export default function SettingsScreen() {
             Use localhost for simulator; use your computer’s IP for a physical device (e.g. http://192.168.1.100:8000).
           </Text>
           <TextInput
+            accessibilityLabel="API base URL"
             autoCapitalize="none"
             autoCorrect={false}
             editable={!saving}
@@ -299,6 +300,7 @@ export default function SettingsScreen() {
           </View>
           <Text style={styles.hint}>Required only if the server has API key auth enabled. Leave blank for local dev.</Text>
           <TextInput
+            accessibilityLabel="API key, optional"
             autoCapitalize="none"
             autoCorrect={false}
             editable={!saving}

@@ -1322,6 +1322,7 @@ export default function HomeScreen() {
         <View style={styles.searchInputWrapper}>
           <Search size={18} color={theme.colors.textMuted} style={{ marginRight: 8 }} />
           <TextInput
+            accessibilityLabel="Where to? Search buildings, places, or an address"
             style={styles.searchInput}
             placeholder="e.g. Siebel, Illini Union, or an address"
             placeholderTextColor={theme.colors.textMuted}
