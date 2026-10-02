@@ -17,6 +17,7 @@ def build_share_page(token: str) -> str:
     .header-title {{ font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }}
     .live-dot {{ width: 8px; height: 8px; border-radius: 50%; background: #4ade80; animation: pulse 1.5s infinite; }}
     @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.3; }} }}
+    .live-dot.stale {{ background: #fbbf24; animation: none; }}
     .card {{ background: white; border-radius: 16px; margin: 16px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
     .label {{ font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }}
     .destination {{ font-size: 28px; font-weight: 800; color: #13294B; line-height: 1.2; margin-bottom: 20px; }}
@@ -92,14 +93,23 @@ def build_share_page(token: str) -> str:
         document.getElementById('stopName').textContent = data.stop_name;
       }}
     }}
+    function setStale(stale) {{
+      document.getElementById('liveDot').classList.toggle('stale', stale);
+    }}
     function fetchStatus() {{
       fetch('/share/trips/' + TOKEN + '/status')
         .then(function(r) {{ return r.ok ? r.json() : Promise.reject(r.status); }})
         .then(function(data) {{
+          setStale(false);
           if (data.expired) {{ showExpired('This trip has ended'); return; }}
           applyState(data);
         }})
-        .catch(function() {{ showExpired('Trip not found'); }});
+        .catch(function(status) {{
+          // Only a 404 is final. A rate limit, 5xx or dropped connection is
+          // transient: flag the data as stale and let the next poll retry.
+          if (status === 404) {{ showExpired('Trip not found'); return; }}
+          setStale(true);
+        }});
     }}
     fetchStatus();
     pollTimer = setInterval(fetchStatus, 15000);
