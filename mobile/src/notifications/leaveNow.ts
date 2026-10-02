@@ -13,9 +13,11 @@ import type { RecommendationOption, RecommendationStep } from "@/src/api/types";
 const LEAVE_NOW_PREFIX = "leave-now-";
 const DEEP_LINK_PATH = "/(tabs)?focus=recommendations";
 
+const CHANNEL_ID = "leave-now-alerts";
+
 async function ensureLeaveNowChannel(): Promise<void> {
   if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("leave-now-alerts", {
+    await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
       name: "Leave Now alerts",
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
@@ -82,6 +84,9 @@ export async function scheduleLeaveNowAlert(
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds: secondsFromNow,
       repeats: false,
+      // Without this Android posts to the default channel and the HIGH
+      // importance / vibration configured above never applies.
+      channelId: CHANNEL_ID,
     },
   });
 }

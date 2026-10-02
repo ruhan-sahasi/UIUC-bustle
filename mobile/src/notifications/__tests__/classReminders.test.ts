@@ -88,13 +88,25 @@ describe("scheduleClassReminders", () => {
     expect(ids.some((i) => i.includes("20260306"))).toBe(false);
   });
 
+  it("uses a typed date trigger on the class-reminders Android channel", async () => {
+    jest.setSystemTime(new Date(2026, 2, 1, 20, 0, 0)); // Sunday
+    await scheduleClassReminders([makeClass()], {});
+    expect(mockSchedule).toHaveBeenCalled();
+    for (const call of mockSchedule.mock.calls) {
+      expect(call[0].trigger).toEqual(
+        expect.objectContaining({ type: "date", channelId: "class-reminders" }),
+      );
+      expect(call[0].trigger.date).toBeInstanceOf(Date);
+    }
+  });
+
   it("never schedules a trigger in the past", async () => {
     jest.setSystemTime(new Date(2026, 2, 2, 8, 55, 0)); // Monday 8:55, class at 9:00
     await scheduleClassReminders([makeClass()], {});
 
     const now = Date.now();
     for (const call of mockSchedule.mock.calls) {
-      expect((call[0].trigger as Date).getTime()).toBeGreaterThan(now);
+      expect((call[0].trigger as { date: Date }).date.getTime()).toBeGreaterThan(now);
     }
     // Today's 20-min and 45-min reminders are past; Wednesday's are not.
     expect(scheduledIds().some((i) => i.includes("20260304"))).toBe(true);
@@ -134,7 +146,7 @@ describe("scheduleClassReminders", () => {
     );
     await scheduleClassReminders(many, {});
 
-    const times = mockSchedule.mock.calls.map((c) => (c[0].trigger as Date).getTime());
+    const times = mockSchedule.mock.calls.map((c) => (c[0].trigger as { date: Date }).date.getTime());
     expect([...times].sort((a, b) => a - b)).toEqual(times);
   });
 

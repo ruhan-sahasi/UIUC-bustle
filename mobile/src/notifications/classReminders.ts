@@ -56,10 +56,13 @@ export function setNotificationHandler(): void {
   });
 }
 
+/** Android channel every class reminder posts to (ignored on iOS). */
+const CHANNEL_ID = "class-reminders";
+
 /** Create default channel for Android so scheduled notifications show. */
 async function ensureChannel(): Promise<void> {
   if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("class-reminders", {
+    await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
       name: "Class reminders",
       importance: Notifications.AndroidImportance.DEFAULT,
       sound: undefined,
@@ -284,7 +287,13 @@ export async function scheduleClassReminders(
         body: n.body,
         data: { url: DEEP_LINK_PATH },
       },
-      trigger: n.at as unknown as Notifications.NotificationTriggerInput,
+      // A bare Date is the deprecated trigger form (it logs a warning per
+      // call) and can't carry the Android channel.
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: n.at,
+        channelId: CHANNEL_ID,
+      },
     });
   }
 }
@@ -342,6 +351,7 @@ export async function scheduleMissClassAlert(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds: 1,
+      channelId: CHANNEL_ID,
     },
   });
 }
@@ -371,6 +381,7 @@ export async function scheduleStopThresholdAlert(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds: 1,
+      channelId: CHANNEL_ID,
     },
   });
 }
@@ -396,6 +407,7 @@ export async function scheduleMorningDigest(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: digestTime,
+      channelId: CHANNEL_ID,
     },
   });
 }
@@ -414,6 +426,6 @@ export async function sendTestNotification(): Promise<void> {
       body: "Test notification — if you see this, reminders will work for your classes.",
       data: {},
     },
-    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3 },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 3, channelId: CHANNEL_ID },
   });
 }
