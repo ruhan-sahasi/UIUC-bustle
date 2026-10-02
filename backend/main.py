@@ -21,7 +21,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from settings import get_settings
-from src.data.db import init_pool, close_pool, get_pool
+from src.data.db import DatabaseUnavailable, init_pool, close_pool, get_pool
 from src.data.buildings_repo import (
     CUSTOM_BUILDING_ID, list_buildings, get_building, search_buildings,
     create_class, delete_class, list_classes, update_class, BuildingRecord, ClassRecord
@@ -340,6 +340,13 @@ _docs_kwargs = {} if settings.debug else {"docs_url": None, "redoc_url": None, "
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan, **_docs_kwargs)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(DatabaseUnavailable)
+def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
+    """Routes that call get_pool() without their own try/except (crowding,
+    share) answer 503 like the rest of the API instead of a generic 500."""
+    return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
 
 
 @app.exception_handler(Exception)
