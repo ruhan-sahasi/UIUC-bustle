@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import asyncpg
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -21,7 +23,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from settings import get_settings
 from src.data.db import init_pool, close_pool, get_pool
 from src.data.buildings_repo import (
-    list_buildings, get_building, search_buildings,
+    CUSTOM_BUILDING_ID, list_buildings, get_building, search_buildings,
     create_class, delete_class, list_classes, update_class, BuildingRecord, ClassRecord
 )
 from src.data.stops_repo import search_nearby
@@ -1010,6 +1012,8 @@ async def post_schedule_class(request: Request, body: CreateClassRequest, user_i
             end_time_local=body.end_time_local,
             user_id=user_id,
         )
+    except asyncpg.ForeignKeyViolationError as e:
+        raise HTTPException(status_code=400, detail="Unknown building_id.") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return ClassResponse(
@@ -1049,6 +1053,8 @@ async def patch_schedule_class(request: Request, class_id: str, body: UpdateClas
     updates = body.model_dump(exclude_none=True)
     try:
         rec = await update_class(pool, class_id, user_id=user_id, updates=updates)
+    except asyncpg.ForeignKeyViolationError as e:
+        raise HTTPException(status_code=400, detail="Unknown building_id.") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if rec is None:
@@ -1137,7 +1143,7 @@ async def post_recommendation(request: Request, body: RecommendationRequest, use
     if body.destination_lat is not None and body.destination_lng is not None:
         dest_lat, dest_lng = body.destination_lat, body.destination_lng
         dest_name = body.destination_name or "Destination"
-        destination_building_id = "custom"
+        destination_building_id = CUSTOM_BUILDING_ID
         logger.info("telemetry route=recommendation custom_destination")
     elif body.destination_building_id:
         building = await get_building(pool, body.destination_building_id)

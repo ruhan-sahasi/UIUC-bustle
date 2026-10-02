@@ -54,14 +54,23 @@ def _row_to_class(row) -> ClassRecord:
     )
 
 
+# Placeholder row (at 0,0) that schedule_classes.building_id points at when a
+# class has a free-form destination instead of a campus building. It is not a
+# real place, so it never appears in listings or lookups.
+CUSTOM_BUILDING_ID = "custom"
+
+
 async def list_buildings(pool: asyncpg.Pool) -> list[BuildingRecord]:
     rows = await pool.fetch(
-        "SELECT building_id, name, lat, lng FROM buildings ORDER BY name"
+        "SELECT building_id, name, lat, lng FROM buildings WHERE building_id != $1 ORDER BY name",
+        CUSTOM_BUILDING_ID,
     )
     return [_row_to_building(r) for r in rows]
 
 
 async def get_building(pool: asyncpg.Pool, building_id: str) -> Optional[BuildingRecord]:
+    if building_id == CUSTOM_BUILDING_ID:
+        return None
     row = await pool.fetchrow(
         "SELECT building_id, name, lat, lng FROM buildings WHERE building_id = $1",
         building_id,
@@ -108,7 +117,7 @@ async def create_class(
     if class_id is None:
         class_id = str(uuid.uuid4())
     if building_id is None:
-        building_id = "custom"
+        building_id = CUSTOM_BUILDING_ID
 
     await pool.execute(
         """

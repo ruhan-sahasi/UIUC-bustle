@@ -66,3 +66,10 @@ def test_requires_exactly_one_destination_kind():
 
 def test_update_ignores_unset_fields():
     assert UpdateClassRequest(title=" New ").model_dump(exclude_none=True) == {"title": "New"}
+
+
+def test_custom_placeholder_is_not_a_building():
+    with pytest.raises(ValidationError, match="Provide building_id"):
+        _create(building_id="custom")
+    req = _create(building_id="custom", destination_lat=40.1, destination_lng=-88.2)
+    assert req.building_id is None

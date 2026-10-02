@@ -2,7 +2,7 @@
 import re
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from src.data.buildings_repo import VALID_DAYS
+from src.data.buildings_repo import CUSTOM_BUILDING_ID, VALID_DAYS
 from src.share.models import NoNulModel
 
 
@@ -110,6 +110,13 @@ class _ClassFields(NoNulModel):
     @classmethod
     def _optional_text(cls, v: str | None) -> str | None:
         return _blank_to_none(v)
+
+    @field_validator("building_id")
+    @classmethod
+    def _not_placeholder(cls, v: str | None) -> str | None:
+        # "custom" is the internal placeholder for coordinate destinations;
+        # treat it as "no building" so it must come with coordinates.
+        return None if v == CUSTOM_BUILDING_ID else v
 
 
 class CreateClassRequest(_ClassFields):

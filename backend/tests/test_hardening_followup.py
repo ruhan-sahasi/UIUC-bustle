@@ -95,7 +95,8 @@ async def test_class_create_capped_at_100_per_user(pg_pool):
                 "title": "Boundary class",
                 "days_of_week": ["MON"],
                 "start_time_local": "10:00",
-                "building_id": "custom",
+                "destination_lat": 40.11,
+                "destination_lng": -88.22,
             }
             async with _client() as ac:
                 at_cap = await ac.post("/schedule/classes", json=body, headers=auth_headers)
@@ -128,7 +129,8 @@ async def test_class_create_under_cap_unaffected(pg_pool):
                         "title": "CS 101",
                         "days_of_week": ["MON", "WED"],
                         "start_time_local": "09:00",
-                        "building_id": "custom",
+                        "destination_lat": 40.11,
+                        "destination_lng": -88.22,
                     },
                     headers={"Authorization": "Bearer faketoken"},
                 )
@@ -137,3 +139,37 @@ async def test_class_create_under_cap_unaffected(pg_pool):
     finally:
         await pg_pool.execute("DELETE FROM schedule_classes WHERE user_id = $1", user_id)
         await pg_pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
+
+
+async def test_unknown_building_id_is_400_not_500(pg_pool):
+    """schedule_classes.building_id is a foreign key; an unknown id used to
+    surface as an unhandled ForeignKeyViolationError (500)."""
+    user_id = f"fk-test-{uuid.uuid4()}"
+    try:
+        with patch.dict(os.environ, {"SUPABASE_JWT_SECRET": "test-secret"}), \
+             patch("src.auth.jwt.jwt.get_unverified_header", return_value={"alg": "HS256"}), \
+             patch("src.auth.jwt.jwt.decode", return_value={"sub": user_id}), \
+             patch.object(main, "get_pool", return_value=pg_pool):
+            async with _client() as ac:
+                r = await ac.post(
+                    "/schedule/classes",
+                    json={
+                        "title": "Ghost class",
+                        "days_of_week": ["TUE"],
+                        "start_time_local": "11:00",
+                        "building_id": "no-such-building",
+                    },
+                    headers={"Authorization": "Bearer faketoken"},
+                )
+        assert r.status_code == 400
+        assert "building" in r.json()["detail"].lower()
+    finally:
+        await pg_pool.execute("DELETE FROM schedule_classes WHERE user_id = $1", user_id)
+        await pg_pool.execute("DELETE FROM users WHERE user_id = $1", user_id)
+
+
+async def test_custom_placeholder_hidden_from_building_lookups(pg_pool):
+    from src.data.buildings_repo import get_building, list_buildings
+
+    assert await get_building(pg_pool, "custom") is None
+    assert all(b.building_id != "custom" for b in await list_buildings(pg_pool))
