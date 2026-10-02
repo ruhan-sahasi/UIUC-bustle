@@ -1,0 +1,37 @@
+# Weekly dependency update PRs. Grouped so a routine week is one PR per
+# ecosystem rather than a dozen.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /mobile
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Expo pins its native modules to the SDK; bump those together via
+    # `npx expo install --fix` on an SDK upgrade, not piecemeal.
+    ignore:
+      - dependency-name: "expo*"
+      - dependency-name: "react-native*"
+      - dependency-name: "@react-native*"
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+    groups:
+      mobile-minor-patch:
+        update-types: [minor, patch]
