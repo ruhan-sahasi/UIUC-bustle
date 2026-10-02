@@ -3,7 +3,16 @@ jest.mock("@react-native-async-storage/async-storage", () =>
 );
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { addActivityEntry, getActivityLog, type ActivityEntry } from "../activityLog";
+import {
+  addActivityEntry,
+  calcStreak,
+  dateStringForOffset,
+  getActivityLog,
+  getWeeklyStepGoal,
+  setWeeklyStepGoal,
+  WEEKLY_STEP_GOAL,
+  type ActivityEntry,
+} from "../activityLog";
 
 const KEY = "@uiuc_bus_activity_log";
 
@@ -56,5 +65,59 @@ describe("activityLog persistence cap", () => {
     expect(await getActivityLog()).toEqual([]);
     await AsyncStorage.setItem(KEY, JSON.stringify({ notAnArray: true }));
     expect(await getActivityLog()).toEqual([]);
+  });
+});
+
+
+function stepsOn(offset: number, stepCount: number): ActivityEntry {
+  return { ...makeEntry(offset), id: `d-${offset}-${stepCount}`, date: dateStringForOffset(offset), stepCount };
+}
+
+describe("calcStreak", () => {
+  it("counts consecutive qualifying days ending today", () => {
+    expect(calcStreak([stepsOn(0, 600), stepsOn(1, 900), stepsOn(2, 700)])).toBe(3);
+  });
+
+  it("sums multiple walks on the same day", () => {
+    expect(calcStreak([stepsOn(0, 300), stepsOn(0, 300)])).toBe(1);
+  });
+
+  it("does not reset to 0 before today's first walk", () => {
+    // Yesterday and the day before qualified; nothing logged yet today.
+    expect(calcStreak([stepsOn(1, 900), stepsOn(2, 700)])).toBe(2);
+  });
+
+  it("breaks on a missed day in the past", () => {
+    expect(calcStreak([stepsOn(0, 900), stepsOn(2, 900)])).toBe(1);
+    expect(calcStreak([stepsOn(2, 900)])).toBe(0);
+  });
+
+  it("terminates with a zero threshold and ignores junk step counts", () => {
+    const junk = { ...stepsOn(1, 0), stepCount: "lots" as unknown as number };
+    expect(calcStreak([stepsOn(0, 10), junk], 0)).toBe(1);
+    expect(calcStreak([], 0)).toBe(0);
+  });
+});
+
+describe("weekly step goal", () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it("falls back to the default for missing, zero, negative, or junk values", async () => {
+    expect(await getWeeklyStepGoal()).toBe(WEEKLY_STEP_GOAL);
+    for (const raw of ["0", "-5", "abc"]) {
+      await AsyncStorage.setItem("@uiuc_bus_weekly_step_goal", raw);
+      expect(await getWeeklyStepGoal()).toBe(WEEKLY_STEP_GOAL);
+    }
+  });
+
+  it("stores a rounded goal with a 1000-step floor", async () => {
+    await setWeeklyStepGoal(42_000.6);
+    expect(await getWeeklyStepGoal()).toBe(42_001);
+    await setWeeklyStepGoal(10);
+    expect(await getWeeklyStepGoal()).toBe(1000);
+    await setWeeklyStepGoal(NaN);
+    expect(await getWeeklyStepGoal()).toBe(WEEKLY_STEP_GOAL);
   });
 });

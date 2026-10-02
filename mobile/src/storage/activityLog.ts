@@ -55,16 +55,23 @@ export function dateStringForOffset(offsetDays: number): string {
 
 /**
  * Returns the number of consecutive days (ending today) where total steps >= minSteps.
- * A day with no activity at all counts as 0 steps and breaks the streak.
+ * A day with no activity at all counts as 0 steps and breaks the streak, except
+ * today: a day still in progress doesn't break it until it's over, so the streak
+ * doesn't read 0 every morning before the first walk.
  */
 export function calcStreak(log: ActivityEntry[], minSteps = 500): number {
+  const stepsByDate = new Map<string, number>();
+  for (const e of log) {
+    stepsByDate.set(e.date, (stepsByDate.get(e.date) ?? 0) + (Number(e.stepCount) || 0));
+  }
+  // A threshold of 0 would let every empty day count and never terminate.
+  const threshold = Math.max(1, minSteps);
   let streak = 0;
-  for (let offset = 0; ; offset++) {
-    const dateStr = dateStringForOffset(offset);
-    const daySteps = log.filter((e) => e.date === dateStr).reduce((s, e) => s + e.stepCount, 0);
-    if (daySteps >= minSteps) {
+  for (let offset = 0; offset <= stepsByDate.size; offset++) {
+    const daySteps = stepsByDate.get(dateStringForOffset(offset)) ?? 0;
+    if (daySteps >= threshold) {
       streak++;
-    } else {
+    } else if (offset > 0) {
       break;
     }
   }
@@ -80,12 +87,14 @@ export async function getWeeklyStepGoal(): Promise<number> {
     const raw = await AsyncStorage.getItem(WEEKLY_GOAL_KEY);
     if (!raw) return WEEKLY_STEP_GOAL;
     const n = parseInt(raw, 10);
-    return isNaN(n) ? WEEKLY_STEP_GOAL : n;
+    // A zero or negative goal would make the progress percentage Infinity/NaN.
+    return Number.isFinite(n) && n > 0 ? n : WEEKLY_STEP_GOAL;
   } catch {
     return WEEKLY_STEP_GOAL;
   }
 }
 
 export async function setWeeklyStepGoal(goal: number): Promise<void> {
-  await AsyncStorage.setItem(WEEKLY_GOAL_KEY, String(Math.max(1000, goal)));
+  const safe = Number.isFinite(goal) ? Math.round(goal) : WEEKLY_STEP_GOAL;
+  await AsyncStorage.setItem(WEEKLY_GOAL_KEY, String(Math.max(1000, safe)));
 }
