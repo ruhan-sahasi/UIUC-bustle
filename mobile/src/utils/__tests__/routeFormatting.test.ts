@@ -38,11 +38,11 @@ describe("formatOptionLabel", () => {
 
 describe("buildRouteSummary", () => {
   it("joins bus and walk options with OR", () => {
-    expect(buildRouteSummary([bus, walk])).toBe("Bus 22 in 3 min OR walk 12.4 min");
+    expect(buildRouteSummary([bus, walk])).toBe("Bus 22 in 3 min OR walk 12 min");
   });
 
   it("returns just the walk part when no bus option exists", () => {
-    expect(buildRouteSummary([walk])).toBe("walk 12.4 min");
+    expect(buildRouteSummary([walk])).toBe("walk 12 min");
   });
 
   it("returns an empty string for no options", () => {

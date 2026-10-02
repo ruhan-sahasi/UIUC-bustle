@@ -12,6 +12,12 @@ describe("formatDistance", () => {
     expect(formatDistance(1609.344)).toBe("1.0 mi");
     expect(formatDistance(3218.688)).toBe("2.0 mi");
   });
+
+  it("never renders NaN or a negative distance", () => {
+    expect(formatDistance(NaN)).toBe("—");
+    expect(formatDistance(Infinity)).toBe("—");
+    expect(formatDistance(-5)).toBe("0 ft");
+  });
 });
 
 describe("haversineMeters", () => {

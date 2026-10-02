@@ -13,8 +13,10 @@ export function buildRouteSummary(options: RecommendationOption[]): string {
   if (bus) {
     const rideStep = bus.steps.find((s) => s.type === "RIDE");
     const route = rideStep?.route ?? "Bus";
-    parts.push(`Bus ${route} in ${bus.depart_in_minutes} min`);
+    // The API returns one-decimal floats; show whole minutes like the rest
+    // of the UI (this string ends up in notification bodies).
+    parts.push(`Bus ${route} in ${Math.round(bus.depart_in_minutes)} min`);
   }
-  if (walk) parts.push(`walk ${walk.eta_minutes} min`);
+  if (walk) parts.push(`walk ${Math.round(walk.eta_minutes)} min`);
   return parts.join(" OR ");
 }

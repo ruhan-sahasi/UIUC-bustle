@@ -2,9 +2,11 @@
  * Format a distance in meters for display in imperial units.
  * < 528 ft  → "X ft"
  * ≥ 528 ft  → "X.X mi"
+ * Non-finite input (a missing GPS fix) → "—" rather than "NaN mi".
  */
 export function formatDistance(meters: number): string {
-  const feet = meters * 3.28084;
+  if (!Number.isFinite(meters)) return "—";
+  const feet = Math.max(0, meters) * 3.28084;
   if (feet < 528) {
     return `${Math.round(feet)} ft`;
   }
