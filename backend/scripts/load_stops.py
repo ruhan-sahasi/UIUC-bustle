@@ -1,100 +1,81 @@
 #!/usr/bin/env python3
 """
-Load stops from a CSV file into the local SQLite DB.
+Load stops from a CSV file into the Postgres ``stops`` table.
 
-CSV must have columns: stop_id, stop_name, lat, lng
-(Header row expected.)
+CSV must have columns: stop_id, stop_name, lat, lng (header row expected).
+A GTFS stops.txt (stop_lat / stop_lon) is detected automatically.
 
-To use official GTFS data later:
-  1. Download GTFS zip from MTD/CUMTD (e.g. https://mtd.org/gtfs or your agency).
-  2. Unzip and use stops.txt (columns: stop_id, stop_name, stop_lat, stop_lon).
-  3. Either rename columns in CSV to lat/lng or change this script to map stop_lat/stop_lon -> lat/lng.
-  4. Run: python scripts/load_stops.py --csv path/to/stops.txt
+Usage:
+  DATABASE_URL=postgresql://... python scripts/load_stops.py
+  DATABASE_URL=postgresql://... python scripts/load_stops.py --csv path/to/stops.txt --replace
 
-TODO: update for PostgreSQL — init_db/init_app_db removed in asyncpg migration
+Note: the API seeds stops from data/gtfs.db on startup when the table is empty,
+so this script is only needed to load a custom stop list.
 """
 import argparse
-import csv
+import asyncio
+import os
 import sys
 from pathlib import Path
 
-# Add backend root to path
 backend = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(backend))
 
+from src.data.seed_csv import read_seed_rows
+
+
+async def _load(database_url: str, rows: list, replace: bool) -> None:
+    import asyncpg
+
+    conn = await asyncpg.connect(database_url)
+    try:
+        async with conn.transaction():
+            if replace:
+                await conn.execute("DELETE FROM stops")
+            await conn.executemany(
+                """
+                INSERT INTO stops (stop_id, stop_name, lat, lng)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (stop_id) DO UPDATE
+                SET stop_name = EXCLUDED.stop_name, lat = EXCLUDED.lat, lng = EXCLUDED.lng
+                """,
+                [(r.id, r.name, r.lat, r.lng) for r in rows],
+            )
+    finally:
+        await conn.close()
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Load stops CSV into SQLite")
+    parser = argparse.ArgumentParser(description="Load a stops CSV into Postgres")
     parser.add_argument(
         "--csv",
         default=backend / "data" / "stops_placeholder.csv",
         type=Path,
-        help="Path to CSV (stop_id, stop_name, lat, lng) or GTFS stops.txt (stop_id, stop_name, stop_lat, stop_lon)",
+        help="CSV (stop_id, stop_name, lat, lng) or GTFS stops.txt",
     )
     parser.add_argument(
-        "--db",
-        default=backend / "data" / "stops.db",
-        type=Path,
-        help="Path to SQLite DB file",
-    )
-    parser.add_argument(
-        "--gtfs",
+        "--replace",
         action="store_true",
-        help="CSV is GTFS stops.txt (use stop_lat, stop_lon instead of lat, lng)",
+        help="Delete existing stops before loading (default: upsert)",
     )
     args = parser.parse_args()
 
+    database_url = os.environ.get("DATABASE_URL", "")
+    if not database_url:
+        print("Error: DATABASE_URL is not set.", file=sys.stderr)
+        return 1
     if not args.csv.exists():
         print(f"Error: CSV not found: {args.csv}", file=sys.stderr)
         return 1
 
-    args.db.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        rows = list(read_seed_rows(args.csv, id_col="stop_id", name_col="stop_name"))
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
-    lat_col = "stop_lat" if args.gtfs else "lat"
-    lng_col = "stop_lon" if args.gtfs else "lng"
-
-    import sqlite3
-    with open(args.csv, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        if not reader.fieldnames:
-            print("Error: empty CSV", file=sys.stderr)
-            return 1
-        # Normalize headers (strip BOM / spaces)
-        fieldnames = [h.strip().lower().lstrip("\ufeff") for h in reader.fieldnames]
-        if "stop_id" not in fieldnames or lat_col not in fieldnames or lng_col not in fieldnames:
-            # Try GTFS names
-            if "stop_lat" in fieldnames and "stop_lon" in fieldnames:
-                lat_col, lng_col = "stop_lat", "stop_lon"
-                args.gtfs = True
-            else:
-                print(f"Error: CSV must have stop_id, stop_name, and lat/lng (or stop_lat/stop_lon). Got: {fieldnames}", file=sys.stderr)
-                return 1
-        name_col = "stop_name"
-
-    count = 0
-    with sqlite3.connect(args.db) as conn:
-        conn.execute("DELETE FROM stops")
-        with open(args.csv, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row = {k.strip().lower().lstrip("\ufeff"): v for k, v in row.items()}
-                stop_id = (row.get("stop_id") or "").strip()
-                stop_name = (row.get(name_col) or "").strip()
-                try:
-                    lat = float(row.get(lat_col, 0))
-                    lng = float(row.get(lng_col, 0))
-                except (TypeError, ValueError):
-                    continue
-                if not stop_id:
-                    continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO stops (stop_id, stop_name, lat, lng) VALUES (?, ?, ?, ?)",
-                    (stop_id, stop_name, lat, lng),
-                )
-                count += 1
-        conn.commit()
-
-    print(f"Loaded {count} stops into {args.db}")
+    asyncio.run(_load(database_url, rows, args.replace))
+    print(f"Loaded {len(rows)} stops")
     return 0
 
 

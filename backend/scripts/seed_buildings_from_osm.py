@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """
-Query Overpass API for named buildings within UIUC campus bounds, then seed app.db.
+Query Overpass API for named buildings within UIUC campus bounds, then seed the Postgres buildings table.
 
 Usage:
   python scripts/seed_buildings_from_osm.py
-  python scripts/seed_buildings_from_osm.py --db data/app.db --csv data/buildings_seed.csv --dry-run
+  python scripts/seed_buildings_from_osm.py --csv data/buildings_seed.csv --dry-run
+
+Without --dry-run, DATABASE_URL must be set.
 
 Campus bbox: lat 40.095–40.120, lon -88.248–-88.215 (covers main UIUC campus).
 Expected yield: 80–150 buildings.
-
-TODO: update for PostgreSQL — init_db/init_app_db removed in asyncpg migration
 """
 import argparse
+import asyncio
 import csv
+import os
 import re
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
 backend = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(backend))
+
+from scripts.seed_buildings import upsert_buildings  # noqa: E402
+from src.data.seed_csv import SeedRow  # noqa: E402
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
@@ -110,22 +114,8 @@ def write_csv(buildings: list[dict], csv_path: Path) -> None:
     print(f"  Wrote {len(buildings)} rows to {csv_path}", flush=True)
 
 
-def seed_db(buildings: list[dict], db_path: Path) -> int:
-    count = 0
-    with sqlite3.connect(db_path) as conn:
-        for b in buildings:
-            conn.execute(
-                "INSERT OR REPLACE INTO buildings (building_id, name, lat, lng) VALUES (?, ?, ?, ?)",
-                (b["building_id"], b["name"], b["lat"], b["lng"]),
-            )
-            count += 1
-        conn.commit()
-    return count
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed UIUC buildings from OpenStreetMap via Overpass API")
-    parser.add_argument("--db", default=backend / "data" / "app.db", type=Path, help="SQLite DB path")
     parser.add_argument("--csv", default=backend / "data" / "buildings_seed.csv", type=Path, help="Output CSV path")
     parser.add_argument("--dry-run", action="store_true", help="Print results but don't write to DB")
     args = parser.parse_args()
@@ -154,8 +144,13 @@ def main() -> int:
             print(f"  … and {len(buildings) - 10} more")
         return 0
 
-    count = seed_db(buildings, args.db)
-    print(f"Seeded {count} buildings into {args.db}")
+    database_url = os.environ.get("DATABASE_URL", "")
+    if not database_url:
+        print("Error: DATABASE_URL is not set (or pass --dry-run).", file=sys.stderr)
+        return 1
+    rows = [SeedRow(b["building_id"], b["name"], b["lat"], b["lng"]) for b in buildings]
+    asyncio.run(upsert_buildings(database_url, rows))
+    print(f"Seeded {len(rows)} buildings")
     return 0
 
 
