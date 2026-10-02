@@ -1252,6 +1252,12 @@ async def directions_walk(request: Request, orig_lat: float, orig_lng: float, de
     """Proxy walking directions via OSRM. Returns { coords: [[lat, lng], ...] }."""
     import httpx
 
+    # Same region fence as the other geo endpoints: keeps NaN/inf out of the
+    # JSON response and stops this from being an open proxy to public OSRM.
+    for lat, lng in ((orig_lat, orig_lng), (dest_lat, dest_lng)):
+        _validate_lat_lng(lat, lng)
+        _validate_uiuc_region(lat, lng)
+
     def _round5(v: float) -> float:
         return round(v, 5)
 
@@ -1265,7 +1271,7 @@ async def directions_walk(request: Request, orig_lat: float, orig_lng: float, de
     fallback = {"coords": [[orig_lat, orig_lng], [dest_lat, dest_lng]]}
     try:
         osrm_url = (
-            f"http://router.project-osrm.org/route/v1/foot/"
+            f"https://router.project-osrm.org/route/v1/foot/"
             f"{orig_lng},{orig_lat};{dest_lng},{dest_lat}"
             f"?geometries=geojson&overview=full"
         )
@@ -1278,7 +1284,9 @@ async def directions_walk(request: Request, orig_lat: float, orig_lng: float, de
         result = {"coords": coords}
     except Exception as e:
         logger.warning("telemetry osrm_error error=%s", str(e))
-        result = fallback
+        # Don't cache the straight-line fallback: a transient OSRM blip would
+        # otherwise pin a bad route for the whole TTL.
+        return fallback
 
     _cache_put(_walk_directions_cache, cache_key, (result, now + WALK_DIRECTIONS_CACHE_TTL))
     return result
