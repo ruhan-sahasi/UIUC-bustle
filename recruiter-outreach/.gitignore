@@ -1,0 +1,11 @@
+# Personal config stays local (the repo is public). Only the *.example.yaml files are tracked.
+config/*.yaml
+!config/*.example.yaml
+config/gmail_token.json
+config/gmail_client_secret.json
+
+# Runtime state: SQLite ledger, review pages, dry-run outbox
+data/
+
+.venv/
+.env

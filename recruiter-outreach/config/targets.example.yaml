@@ -1,0 +1,17 @@
+# Companies and roles to reach out about. Copy to targets.yaml (gitignored).
+# Required: company, role. Strongly recommended: domain (recruiter emails must be on this domain).
+
+- company: Example Corp
+  domain: example.com
+  alt_domains: []                 # other email domains the company uses
+  role: Software Engineering Intern, Summer 2027
+  track: swe                      # swe | pm | consulting  (picks the resume and the experiences)
+  posting_url: https://example.com/careers/123
+  location: San Francisco, CA
+  applied: true                   # the email says you applied only when this is true
+  priority: 1                     # lower goes first
+  # resume: ~/Desktop/Applications/Example/Resume.pdf   # tailored resume for this role
+  # graduation: May 2029                                 # override for eligibility checks
+  # titles: [University Recruiter, Technical Recruiter]  # override who to look for
+  # notes: Context for the writer, for example the team you are most interested in.
+  # enabled: false                                       # keep it in the file but skip it

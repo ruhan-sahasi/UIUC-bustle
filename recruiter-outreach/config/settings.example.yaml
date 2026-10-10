@@ -1,0 +1,57 @@
+# Pipeline settings. Copy to settings.yaml (gitignored).
+
+# review: every email waits in the review page until you run `outreach approve`.
+# auto:   emails that pass every automated check (style lint, verified email, verified research fact,
+#         no eligibility flags) are approved and sent without a click. Anything else waits for review.
+mode: review
+
+# smtp      send directly (Gmail App Password, Outlook, any SMTP server)
+# drafts    put each email in your mailbox Drafts folder over IMAP and send it yourself from the mail app
+# gmail_api send through the Gmail API with OAuth (when your school disables App Passwords)
+# file      write .eml files to data/outbox only
+delivery: smtp
+
+sender:
+  name: Jordan Lee
+  email: jordan@example.edu
+  provider: gmail            # gmail | outlook | custom (custom: set smtp_host, smtp_port, smtp_security, imap_host)
+  username_env: OUTREACH_EMAIL_USER        # defaults to sender.email when unset
+  password_env: OUTREACH_EMAIL_PASSWORD    # App Password, never your real password
+  bcc_self: false
+
+limits:
+  daily_send_cap: 15                     # total emails per day, follow-ups included
+  contacts_per_company: 2                # people per company, ever
+  new_contacts_per_company_per_day: 1    # stagger the second person at a company to a later day
+  min_gap_seconds: 90                    # random pause between sends
+  max_gap_seconds: 240
+  apollo_enrich_per_run: 20              # max people revealed per run (each costs Apollo credits)
+  send_window:                           # only send inside this window (recipient-friendly hours)
+    timezone: America/New_York
+    days: [Mon, Tue, Wed, Thu]
+    start: "08:30"
+    end: "11:30"
+
+followup:
+  enabled: true
+  after_business_days: 5                 # one short in-thread follow-up if there is no reply
+
+apollo:
+  api_key_env: APOLLO_API_KEY
+  accept_email_status: [verified]        # never send to guessed or unverified addresses
+  person_locations: [United States]
+  per_page: 25
+  max_pages: 2
+  use_fallback_titles: true              # no recruiters found -> engineering managers, founders, etc.
+  # recruiter_titles, fallback_titles and exclude_title_patterns have sensible defaults in config.py;
+  # override them here if needed.
+
+llm:
+  model: claude-opus-5-5
+  research_effort: high
+  writing_effort: high
+  max_web_searches: 6
+  max_web_fetches: 4
+  fallbacks: true                        # server-side refusal fallback (fallbacks: "default")
+  max_draft_attempts: 3                  # rewrite rounds when the style check fails
+  max_fact_age_days: 365
