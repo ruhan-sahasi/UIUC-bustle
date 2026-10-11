@@ -78,7 +78,10 @@ def cmd_check(args) -> int:
         report(False, "config", str(exc))
         return 1
     s, prof = app.settings, app.profile
-    report(True, "config", f"{len(app.targets)} targets ({sum(t.enabled for t in app.targets)} enabled), mode={s.mode}, delivery={s.delivery}")
+    enabled = sum(t.enabled for t in app.targets)
+    report(True, "config", f"{len(app.targets)} targets ({enabled} enabled), mode={s.mode}, delivery={s.delivery}")
+    if not enabled:
+        report(False, "targets", "no target is enabled; remove `enabled: false` from the ones you want in targets.yaml")
     for track in sorted({t.track for t in app.targets if t.enabled} | set(prof.resumes)):
         if track == "default" and "default" not in prof.resumes:
             continue

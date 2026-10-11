@@ -128,3 +128,16 @@ def test_greeting_name_capitalizes():
 
     assert greeting_name("riley") == "Riley" and greeting_name("ANNE-MARIE") == "Anne-Marie"
     assert greeting_name("McKenzie") == "McKenzie" and greeting_name("") == "there"
+
+
+def test_smtp_connect_failure_names_host_and_fix(monkeypatch):
+    import smtplib
+
+    from outreach.mailer import SmtpTransport
+
+    def closed(*args, **kwargs):
+        raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+    monkeypatch.setattr(smtplib, "SMTP_SSL", closed)
+    with pytest.raises(DeliveryError, match=r"smtp\.gmail\.com:465.*port 587 with smtp_security: starttls"):
+        SmtpTransport(SENDER).check()

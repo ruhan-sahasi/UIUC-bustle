@@ -91,12 +91,24 @@ class SmtpTransport:
     def _connect(self) -> smtplib.SMTP:
         s = self.sender
         ctx = ssl.create_default_context()
-        if s.smtp_security == "ssl":
-            conn: smtplib.SMTP = smtplib.SMTP_SSL(s.smtp_host, s.smtp_port, timeout=self.timeout, context=ctx)
-        else:
-            conn = smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=self.timeout)
-            if s.smtp_security == "starttls":
-                conn.starttls(context=ctx)
+        try:
+            if s.smtp_security == "ssl":
+                conn: smtplib.SMTP = smtplib.SMTP_SSL(s.smtp_host, s.smtp_port, timeout=self.timeout, context=ctx)
+            else:
+                conn = smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=self.timeout)
+                if s.smtp_security == "starttls":
+                    conn.starttls(context=ctx)
+        except (smtplib.SMTPServerDisconnected, ConnectionError, TimeoutError, OSError) as exc:
+            if isinstance(exc, ssl.SSLCertVerificationError):
+                raise DeliveryError(
+                    f"TLS certificate check failed for {s.smtp_host}: {exc}. On macOS with python.org Python, "
+                    "run 'Install Certificates.command' from the Python folder in Applications."
+                ) from exc
+            other = "port 587 with smtp_security: starttls" if s.smtp_port == 465 else "port 465 with smtp_security: ssl"
+            raise DeliveryError(
+                f"Could not open a mail connection to {s.smtp_host}:{s.smtp_port} ({exc}). This network may block "
+                f"that port. Try {other} under sender in settings.yaml, another network, or delivery: gmail_api."
+            ) from exc
         if s.smtp_security != "none" or s.password:
             if not s.password:
                 raise AuthFailed(f"No mailbox password. Set {s.password_env} in recruiter-outreach/.env.")

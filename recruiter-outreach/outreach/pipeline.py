@@ -498,6 +498,8 @@ class Pipeline:
     # ------------------------------------------------------------------ run
     def run(self, *, send: bool = True, force_window: bool = False) -> Report:
         self.sync_targets()
+        if not any(t.enabled for t in self.app.targets):
+            self.report.notes.append("no enabled targets in targets.yaml (remove `enabled: false` to include one)")
         try:
             self.sync_inbox()
         except Exception as exc:
