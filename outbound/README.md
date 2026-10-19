@@ -62,6 +62,10 @@ verify, so the company paragraph has no specifics) or a `RESEARCH INCOMPLETE` li
 was cut off, so eligibility was not fully checked). Launch is blocked until you have read the copy and
 deleted the line.
 
+**`--force`** goes ahead despite style issues (a long subject, a banned word you meant to use) and
+prints every one. It never skips the safety checks: resume wording vs mode, review markers, merge
+fields, or email structure.
+
 ## Commands
 
 | Command | Does | Costs |

@@ -56,8 +56,12 @@ class LLM:
         else:
             response = self.client.beta.messages.create(**kwargs)
         usage = getattr(response, "usage", None)
-        for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
-            self.usage[key] += int(getattr(usage, key, 0) or 0)
+        # With fallbacks, top-level usage covers only the attempt that answered; a declined attempt is
+        # billed too and is listed in usage.iterations, so count every iteration when they are present.
+        parts = [it for it in (getattr(usage, "iterations", None) or []) if hasattr(it, "input_tokens")] or [usage]
+        for part in parts:
+            for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+                self.usage[key] += int(getattr(part, key, 0) or 0)
         server = getattr(usage, "server_tool_use", None)
         self.usage["web_search_requests"] += int(getattr(server, "web_search_requests", 0) or 0)
         if response.stop_reason == "refusal":
@@ -354,7 +358,7 @@ def lint_sequence(seq: Sequence, *, profile: Profile, target: Target) -> list[Vi
                         opening=profile.opening if i == 1 else "", fixed_lines=fixed, allowed_links=links, **common)
     first = seq.emails[0] if seq.emails else ""
     if link_mode:
-        if f"My resume: {resume}" not in first:
+        if f"My resume: {resume}" not in [line.strip() for line in first.splitlines()]:
             v.append(Violation("email 1", "resume", f'profile.md uses a resume link: email 1 needs the line '
                                                     f'"My resume: {resume}" (run draft --redo, or add it)'))
         if ATTACH_WORDING.search(first):

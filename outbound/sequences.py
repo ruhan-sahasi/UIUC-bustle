@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from apollo_api import Apollo, ApolloError
+from apollo_api import Apollo, ApolloError, ApolloStop
 from common import data_dir, read_csv, write_csv
 
 ENROLLED_COLUMNS = ["date", "target", "campaign_id", "contact_id", "name", "email", "title", "status", "detail"]
@@ -52,30 +52,44 @@ class Sequence:
         return out
 
 
-HEADING = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
+# A heading needs a space after the hashes ("## Email 2"), except the three names the file uses,
+# so a body line like "#1 reason" is never mistaken for one.
+HEADING = re.compile(r"^\s*#{1,6}(?:\s+|(?=(?i:email|subject|research)))(\S.*?)\s*$")
 
 
 def parse_md(text: str, *, source: str = "sequence") -> Sequence:
     """Parse the copy. Anything that could silently change what is sent is an error, not a guess."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     sections: list[tuple[str, int, list[str]]] = []  # (title, line number, lines)
     preamble: list[str] = []
+    notes_lines: list[str] | None = None
     for n, line in enumerate(text.split("\n"), start=1):
+        if notes_lines is not None:  # everything after the research notes heading is notes, never parsed
+            notes_lines.append(line)
+            continue
         m = HEADING.match(line)
         if m and not line.lstrip().startswith(">"):
+            if m.group(1).lower().startswith("research notes"):
+                notes_lines = [m.group(1)]
+                continue
             sections.append((m.group(1), n, []))
         elif sections:
             sections[-1][2].append(line)
         else:
             preamble.append(line)
-    subject, emails, notes = None, [], ""
+    subject, emails = None, []
     for title, n, lines in sections:
         lowered = title.lower()
-        if lowered.startswith("subject"):
-            inline = re.sub(r"(?i)^subject( line)?\s*:?\s*", "", title).strip()
-            rest = [line.strip() for line in lines if line.strip()]
-            subject = inline or (re.sub(r"^>\s?", "", rest[0]).strip() if rest else "")
+        quoted = [line for line in lines if line.strip().startswith(">")]
+        if re.match(r"(?i)^subject( line)?\s*(:|$)", title):
+            if subject is not None:
+                raise ValueError(f"{source} line {n}: a second subject section; keep exactly one")
+            inline = title.split(":", 1)[1].strip() if ":" in title else ""
+            rest = [re.sub(r"^>\s?", "", line.strip()).strip() for line in lines if line.strip()]
+            subject = inline or (rest[0] if rest else "")
             subject = re.sub(r"(?i)^subject\s*:\s*", "", subject)
+            if not inline and len(rest) > 1:
+                raise ValueError(f"{source} line {n}: the subject section has more than one line")
         elif re.match(r"(?i)email\s*\d+\b", title):
             number = int(re.match(r"(?i)email\s*(\d+)", title).group(1))
             day = re.search(r"(?i)\bday\s+(\d+)", title)
@@ -88,18 +102,18 @@ def parse_md(text: str, *, source: str = "sequence") -> Sequence:
                     raise ValueError(f"{source} line {n + offset}: every line of an email starts with '>' "
                                      f"(this one would be dropped): {stripped[:60]!r}")
                 body_lines.append(re.sub(r"^>\s?", "", stripped).rstrip())
-            body = "\n".join(body_lines).strip()
-            body = re.sub(r"\n{3,}", "\n\n", body)
+            body = re.sub(r"\n{3,}", "\n\n", "\n".join(body_lines).strip())
             if not body:
                 raise ValueError(f"{source} line {n}: email {number} has no body (each line starts with >)")
             emails.append((number, int(day.group(1)) if day else None, body, n))
-        elif lowered.startswith("research notes"):
-            notes = "\n".join([title, *lines]).strip()
         elif lowered.startswith("sequence"):
+            if quoted:
+                raise ValueError(f"{source} line {n}: quoted email lines sit under the title, not under an "
+                                 "'## Email N (day D)' heading, so they would not be sent")
             preamble += lines
-        elif re.search(r"(?i)\b(email|follow[- ]?up|touch)\b", title) and not lowered.startswith("sequence"):
-            raise ValueError(f"{source} line {n}: heading {title!r} looks like an email but is not "
-                             "'## Email N (day D)'; rename it or it would not be sent")
+        elif quoted:
+            raise ValueError(f"{source} line {n}: heading {title!r} holds quoted email lines but is not "
+                             "'## Email N (day D)', so they would not be sent; rename the heading")
     if subject is None:
         raise ValueError(f'{source}: no "## Subject line" section')
     if not emails:
@@ -116,6 +130,7 @@ def parse_md(text: str, *, source: str = "sequence") -> Sequence:
         if days and day <= days[-1]:
             raise ValueError(f"{source} line {n}: email {number} must come on a later day than email {number - 1}")
         days.append(day)
+    notes = "\n".join(notes_lines).strip() if notes_lines else ""
     return Sequence(subject=subject, emails=[e[2] for e in emails], days=days, notes=notes,
                     preamble="\n".join(preamble).strip())
 
@@ -298,6 +313,8 @@ def enroll(apollo: Apollo, *, slug: str, campaign_id: str, rows: list[dict], mai
                 contact = apollo.find_contact(email) or apollo.create_contact(
                     first=row.get("first", ""), last=row.get("last", ""), email=email,
                     company=row.get("company", ""), title=row.get("title", ""))
+            except ApolloStop:
+                raise  # rate limit or bad key: stop now, nothing was enrolled
             except ApolloError as exc:
                 result.skipped.append({**row, "detail": f"contact failed: {exc}"})
                 continue
@@ -307,9 +324,10 @@ def enroll(apollo: Apollo, *, slug: str, campaign_id: str, rows: list[dict], mai
         if by_id:
             try:
                 response = apollo.add_contacts(campaign_id, list(by_id), mailbox_id)
-            except Exception as exc:
-                unknown = [{**row, "contact_id": cid, "detail": f"add_contact_ids failed ({exc}); check the "
-                            "sequence in Apollo before retrying"} for cid, row in by_id.items()]
+            except BaseException as exc:  # Ctrl-C included: the request may already be in Apollo
+                if not isinstance(exc, ApolloError) or exc.maybe_processed:
+                    unknown = [{**row, "contact_id": cid, "detail": f"add_contact_ids outcome unknown ({exc!r}); "
+                                "check the sequence in Apollo"} for cid, row in by_id.items()]
                 raise
             skipped = response.get("skipped_contact_ids") or {}
             for cid, row in by_id.items():

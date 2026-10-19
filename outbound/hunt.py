@@ -127,6 +127,7 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
     rows = [r for r in rows if not r.get("status", "").startswith("error")]
     known = {r["apollo_person_id"] for r in rows if r.get("apollo_person_id")}
     report = HuntReport()
+    errors = 0
     try:
         for target in targets:
             have = sum(1 for r in rows if r.get("target") == target.slug and usable(r, target))
@@ -146,16 +147,19 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
                     break
                 if p["id"] in known:
                     continue
+                report.revealed += 1  # every attempt counts toward --max: a failed reveal may still cost a credit
                 try:
                     person = apollo.match(id=p["id"])
                 except ApolloStop:
                     raise  # rate limit, bad key, no credits: stop the run, keep what was paid for
-                except Exception as exc:  # one odd answer should not end the run; retried next time
+                except Exception as exc:  # retried next run, since the person is not marked known
+                    errors += 1
                     log(f"[hunt] {target.slug}: reveal of {p.get('first_name', '')} failed ({str(exc)[:80]}), "
                         "will retry next run")
+                    if errors >= 3:
+                        raise ApolloStop(f"3 reveals failed this run (last: {str(exc)[:120]}); stopping") from exc
                     continue
                 known.add(p["id"])
-                report.revealed += 1
                 first, last = person["first_name"], person["last_name"]
                 if not first:
                     first, last = split_name(person["name"])

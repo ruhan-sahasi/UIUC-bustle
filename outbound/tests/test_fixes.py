@@ -194,7 +194,7 @@ def test_failed_add_contact_ids_is_recorded_and_never_offered_again(server, work
     a = server.client()
     cid, _, _ = sync_sequence(a, parse_md(EXAMPLE), name="x")
     real = Apollo.add_contacts
-    Apollo.add_contacts = lambda self, *args, **kw: (_ for _ in ()).throw(ApolloError("timeout"))
+    Apollo.add_contacts = lambda self, *args, **kw: (_ for _ in ()).throw(ApolloError("timeout", maybe_processed=True))
     rows = [{"name": "Ana", "first": "Ana", "last": "G", "email": "ana.gomez@acme.com", "company": "Acme", "title": "TR"}]
     try:
         with pytest.raises(ApolloError):
@@ -264,7 +264,7 @@ def test_unquoted_and_misheaded_lines_fail_loudly():
         parse_md(EXAMPLE.replace("> Specifically, at Example", "Specifically, at Example"))
     merged = EXAMPLE.replace("## Email 2 (day 5", "### Email 2 (day 5")
     assert len(parse_md(merged).emails) == 2  # ### still counts as a heading
-    with pytest.raises(ValueError, match="looks like an email"):
+    with pytest.raises(ValueError, match="holds quoted email lines"):
         parse_md(EXAMPLE.replace("## Email 2 (day 5, reply in the same thread)", "## Follow-up (day 5)"))
     with pytest.raises(ValueError, match="which day"):
         parse_md(EXAMPLE.replace("## Email 2 (day 5, reply in the same thread)", "## Email 2 (reply)"))
@@ -379,3 +379,116 @@ def test_writer_only_sees_experiences_for_the_track(workdir):
     profile = load_profile()
     assert "Bloom Energy" in profile.experiences_for("consulting")
     assert "Bloom Energy" not in profile.experiences_for("swe") and "Example Startup" in profile.experiences_for("swe")
+
+
+# ---------------------------------------------------------------------------- second verification round
+
+def test_force_never_skips_resume_or_review_checks(cli, workdir, capsys):
+    run("run")
+    link_profile(workdir)
+    assert run("launch", "--target", SLUG, "--yes", "--force") == 1
+    out = capsys.readouterr().out
+    assert "cannot be skipped with --force" in out and "resume" in out and not cli.campaigns
+    assert run("create", "--target", SLUG, "--force", "--activate") == 1 and not cli.campaigns
+
+
+def test_force_still_skips_plain_style_issues_and_prints_them(cli, workdir, capsys):
+    run("run")
+    path = workdir / "sequences" / f"{SLUG}.md"
+    path.write_text(path.read_text().replace("I recently applied", "I recently, robustly applied"))
+    assert run("launch", "--target", SLUG, "--yes", "--force") == 0      # attach pass 1
+    out = capsys.readouterr().out
+    assert "robustly" in out and "Going ahead anyway" in out
+
+
+def test_parser_edge_cases_from_the_second_review():
+    with pytest.raises(ValueError, match="starts with '>'"):
+        parse_md(EXAMPLE.replace("> I have attached my resume", "#1 reason: robots\n> I have attached my resume"))
+    ideas = parse_md(EXAMPLE.replace("## Research notes", "## Subject line ideas\nmaybe this\n\n## Research notes"))
+    assert ideas.subject.startswith("CS student")
+    with pytest.raises(ValueError, match="second subject"):
+        parse_md(EXAMPLE.replace("## Research notes", "## Subject line\nother\n\n## Research notes"))
+    with pytest.raises(ValueError, match="holds quoted email lines"):
+        parse_md(EXAMPLE.replace("## Email 2 (day 5, reply in the same thread)", "## Reply (day 5)"))
+    notes = parse_md(EXAMPLE + "\n#1 email platform for shops\n### Follow-up\n## Email 3 (day 9)\n> not sent\n")
+    assert len(notes.emails) == 2 and "### Follow-up" in notes.notes
+
+
+def test_hunt_counts_failed_reveals_toward_the_cap_and_stops_after_three(server, workdir):
+    target = load_targets()[0]
+    real = Apollo.match
+    Apollo.match = lambda self, **kw: (_ for _ in ()).throw(ApolloError("HTTP 500", maybe_processed=True))
+    try:
+        report = hunt(server.client(), [target], max_reveals=2, log=lambda s: None)
+        assert report.revealed == 2
+        with pytest.raises(ApolloStop, match="3 reveals failed"):
+            hunt(server.client(), [target], max_reveals=10, log=lambda s: None)
+    finally:
+        Apollo.match = real
+
+
+def test_enroll_outcomes_by_failure_kind(server, workdir):
+    a = server.client()
+    cid, _, _ = sync_sequence(a, parse_md(EXAMPLE), name="x", sleep=lambda s: None)
+    rows = [{"name": "Ana", "first": "Ana", "last": "G", "email": "ana.gomez@acme.com", "company": "Acme", "title": "TR"}]
+    real = Apollo.add_contacts
+    for exc, expected in ((ApolloStop("rate limited"), []), (ApolloError("HTTP 422 bad"), []),
+                          (KeyboardInterrupt(), ["enroll_unknown"])):
+        (workdir / "enrolled.csv").unlink(missing_ok=True)
+        Apollo.add_contacts = lambda self, *args, _e=exc, **kw: (_ for _ in ()).throw(_e)
+        try:
+            with pytest.raises(BaseException):
+                enroll(a, slug=SLUG, campaign_id=cid, rows=rows, mailbox_id="mb1", log=lambda s: None)
+        finally:
+            Apollo.add_contacts = real
+        assert [r["status"] for r in read_csv(workdir / "enrolled.csv")] == expected
+    (workdir / "enrolled.csv").unlink()  # Ana is (rightly) blocked as enroll_unknown; start clean
+    real_find = Apollo.find_contact
+    Apollo.find_contact = lambda self, email: (_ for _ in ()).throw(ApolloStop("rate limited"))
+    try:
+        with pytest.raises(ApolloStop):
+            enroll(a, slug=SLUG, campaign_id=cid, rows=rows * 3, mailbox_id="mb1", log=lambda s: None)
+    finally:
+        Apollo.find_contact = real_find
+
+
+def test_pin_slugs_respects_hand_edited_headers_and_refuses_broken_files(workdir):
+    from common import ConfigError, pin_slugs
+
+    path = workdir / "targets.csv"
+    path.write_text("enabled,company,domain,role, slug \nyes,Acme,acme.com,Intern,acme-old-slug\n")
+    assert pin_slugs() == [] and load_targets()[0].slug == "acme-old-slug"
+    path.write_text("enabled,company,company,role\nyes,A,B,Intern\n")
+    with pytest.raises(ConfigError, match="repeated"):
+        pin_slugs()
+    path.write_text("enabled,company,domain,role\nyes,Acme,acme.com,Engineer Intern, Summer 2027\n")
+    with pytest.raises(ConfigError, match="more cells"):
+        pin_slugs()
+
+
+def test_resume_link_must_match_exactly(workdir):
+    link_profile(workdir)
+    profile, target = load_profile(), load_targets()[0]
+    paras = [p.replace("I have attached my resume, and I", "I") for p in GOOD["email1_paragraphs"]]
+    body1, body2 = assemble(profile, "swe", paras, GOOD["email2_paragraphs"])
+    bad = body1.replace("https://drive.example/cv", "https://drive.example/cvv")
+    problems = lint_sequence(Sequence("Penn CS student, SWE intern role", [bad, body2], [0, 5]), profile=profile, target=target)
+    assert {"resume", "links"} <= {p.rule for p in problems}
+
+
+def test_dated_facts_and_nouns_are_allowed_but_forms_are_not():
+    base = parse_md(EXAMPLE).emails[0]
+    assert "graduation" not in rules(base.replace("recently launched", "said its robot ships in 2028 and launched"))
+    assert "graduation" in rules(base.replace("I recently applied", "I finish my degree in May 2028 and applied"))
+    assert "banned_word" not in rules(base.replace("small shops", "small shops with high GPU utilization"))
+    assert "banned_word" in rules(base.replace("built", "was delving into"))
+
+
+def test_usage_counts_every_fallback_iteration():
+    llm = LLM(FakeClaude())
+    usage = SimpleNamespace(input_tokens=10, output_tokens=1, iterations=[
+        SimpleNamespace(input_tokens=1000, output_tokens=100), SimpleNamespace(input_tokens=10, output_tokens=1)])
+    llm.client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(
+        create=lambda **kw: SimpleNamespace(stop_reason="end_turn", content=[], usage=usage))))
+    llm.create(messages=[])
+    assert llm.usage["input_tokens"] == 1010 and llm.usage["output_tokens"] == 101

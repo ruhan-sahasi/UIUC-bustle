@@ -16,7 +16,10 @@ BASE = "https://api.apollo.io/api/v1"
 
 
 class ApolloError(Exception):
-    pass
+    def __init__(self, message: str, *, maybe_processed: bool = False):
+        super().__init__(message)
+        # True when Apollo may have acted on the request anyway (timeout mid-request, 5xx).
+        self.maybe_processed = maybe_processed
 
 
 class ApolloStop(ApolloError):
@@ -47,7 +50,8 @@ class Apollo:
                 # A POST that timed out after Apollo processed it (add_contact_ids) must not run twice.
                 never_sent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
                 if network_retry or not (never_sent or method == "GET"):
-                    raise ApolloError(f"{method} {path}: network error {exc!r}; check Apollo before retrying") from exc
+                    raise ApolloError(f"{method} {path}: network error {exc!r}; check Apollo before retrying",
+                                      maybe_processed=not never_sent) from exc
                 network_retry = True
                 self.sleep(5)
                 continue
@@ -72,7 +76,8 @@ class Apollo:
         if resp.status_code == 422 and "credit" in str(data).lower():
             raise ApolloStop(f"{method} {path} -> HTTP 422: out of Apollo credits? {str(data)[:200]}")
         if resp.status_code >= 400:
-            raise ApolloError(f"{method} {path} -> HTTP {resp.status_code}: {str(data)[:300]}")
+            raise ApolloError(f"{method} {path} -> HTTP {resp.status_code}: {str(data)[:300]}",
+                              maybe_processed=resp.status_code >= 500)
         return data
 
     # ------------------------------------------------------------------ people

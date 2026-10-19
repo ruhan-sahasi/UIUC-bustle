@@ -12,9 +12,15 @@ from dataclasses import dataclass
 APOSTROPHES = "'’‘ʼ"
 FORBIDDEN = {"'": "apostrophe", "’": "curly apostrophe", "‘": "curly quote", "ʼ": "apostrophe",
              "—": "em dash", "–": "en dash", "~": "tilde"}
-# Hard bans: the user's own list. Each is matched as a stem, so "utilizing" and "cutting edge" count too.
-BANNED_WORDS = ["spearheaded", "leveraged", "utilized", "robust", "seamless", "cutting-edge", "passionate", "delve",
-                "thrilled", "synergy", "game-changer", "testament", "tapestry"]
+# Hard bans: the user's own list, each with the forms it takes. Nouns like "utilization" stay allowed.
+BANNED_FORMS = {
+    "spearheaded": r"spearhead(s|ed|ing)?", "leveraged": r"leverag(e|es|ed|ing)", "utilized": r"utiliz(e|es|ed|ing)",
+    "robust": r"robust(ly|ness)?", "seamless": r"seamless(ly)?", "cutting-edge": r"cutting[- ]edge",
+    "passionate": r"passionate(ly)?", "delve": r"delv(e|es|ed|ing)", "thrilled": r"thrill(ed|ing)",
+    "synergy": r"synerg(y|ies|istic)", "game-changer": r"game[- ]chang(er|ers|ing)", "testament": r"testaments?",
+    "tapestry": r"tapestr(y|ies)",
+}
+BANNED_WORDS = list(BANNED_FORMS)
 BANNED_PHRASES = ["I hope this email finds you well", "I hope you are doing well", "not just", "To whom it may concern",
                   "Dear Sir", "Dear Hiring", "just bumping", "circling back"]
 MERGE_FIELDS = {"first", "last", "company"}
@@ -36,11 +42,19 @@ GREETING = re.compile(r"^\s*(hi|hello|hey|dear)\b", re.I)
 SIGN_OFF = re.compile(r"^\s*(warm regards|best regards|best|thank you|thanks|sincerely|cheers),?\s*$", re.I)
 
 
+# Rules --force can never skip: breaking them sends something false or broken, not just off-style.
+SAFETY_RULES = {"resume", "review", "merge_field", "structure", "honesty", "greeting"}
+
+
 @dataclass
 class Violation:
     where: str
     rule: str
     detail: str
+
+    @property
+    def safety(self) -> bool:
+        return self.rule in SAFETY_RULES
 
     def __str__(self) -> str:
         return f"{self.where}: {self.rule}: {self.detail}"
@@ -63,20 +77,27 @@ def words(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9][\w.&/-]*", URL.sub(" ", text)))
 
 
-def _stem_pattern(word: str) -> re.Pattern:
-    stem = word.lower().strip()
-    if len(stem) > 5:
-        stem = re.sub(r"(ing|ed|es|ly|ness|s|e)$", "", stem)
-    body = re.escape(stem).replace(r"\-", "[- ]?").replace(r"\ ", r"\s+")
-    return re.compile(rf"(?<![\w-]){body}\w*", re.I)
+def _word_pattern(word: str) -> re.Pattern:
+    """A banned word and its plain verb or adverb forms (not every word that shares its first letters)."""
+    word = word.lower().strip()
+    if word in BANNED_FORMS:
+        body = BANNED_FORMS[word]
+    else:
+        stem = re.sub(r"(ing|ed|es|s|e)$", "", word) if len(word) > 5 else word
+        body = re.escape(stem).replace(r"\-", "[- ]") + r"(e|es|ed|ing|s|ly|ely)?"
+    return re.compile(rf"(?<![\w-]){body}(?![\w-])", re.I)
+
+
+GRAD_CONTEXT = r"(graduat\w*|class of|expected|degree|finish\w*|complet\w*|bachelor\w*|diploma)"
 
 
 def graduation_pattern(graduation: str) -> re.Pattern:
-    """'class of', 'graduate...', and the user's own graduation years (2028, '28)."""
+    """'class of', 'graduate...', and the user's graduation years when they read as a graduation date
+    ('graduating in May 2028', 'class of 2029', "Penn '28"). A year on its own, as in a dated fact, is fine."""
     years = sorted(set(re.findall(r"20(\d\d)", graduation or "")))
     alternatives = [r"\bgraduat\w*", r"\bclass of\b"]
     for yy in years:
-        alternatives += [rf"(?<!\d)20{yy}(?!\d)", rf"[{APOSTROPHES}]{yy}\b"]
+        alternatives += [rf"\b{GRAD_CONTEXT}\W+(\w+\W+){{0,4}}20{yy}\b", rf"[{APOSTROPHES}]{yy}\b"]
     return re.compile("|".join(alternatives), re.I)
 
 
@@ -114,21 +135,24 @@ def _shared_checks(text: str, *, where: str, company: str, banned_topics: list[s
         v.append(Violation(where, "merge_field", f"{{{name}}} is not a merge field; use {{first}} or {{company}}"))
     if "{{" in merge_text or "}}" in merge_text or re.search(r"\{[^}]*$|^[^{]*\}", merge_text, re.M):
         v.append(Violation(where, "merge_field", "write merge fields as {first}, with one brace on each side"))
-    stray = [u for u in URL.findall(text) if not any(u.startswith(a) for a in allowed_links if a)]
+    stray = [u for u in URL.findall(text) if u.rstrip(".,;:") not in {a for a in allowed_links if a}]
     if stray:
         v.append(Violation(where, "links", f"no links besides the resume link: {stray}"))
     lowered = text.lower()
     for word in BANNED_WORDS + list(extra_banned_words):
-        if word.strip() and _stem_pattern(word).search(masked):
-            v.append(Violation(where, "banned_word", f'"{word}" or a form of it'))
+        if word.strip():
+            hit = _word_pattern(word).search(masked)
+            if hit:
+                v.append(Violation(where, "banned_word", f'"{hit.group(0)}" (banned: {word})'))
     for phrase in BANNED_PHRASES:
         if phrase.lower() in lowered:
             v.append(Violation(where, "banned_phrase", f'"{phrase}"'))
     for topic in banned_topics:
         if topic and re.search(rf"(?<![\w]){re.escape(topic.lower())}(?![\w])", lowered):
             v.append(Violation(where, "banned_topic", f'never mention "{topic}"'))
-    if graduation.search(masked):
-        v.append(Violation(where, "graduation", "no graduation date or class year"))
+    hit = graduation.search(masked)
+    if hit:
+        v.append(Violation(where, "graduation", f'remove "{hit.group(0)}": no graduation date or class year'))
     return v
 
 
@@ -194,5 +218,5 @@ def check_fixed_lines(lines: list[str], *, banned_topics: list[str], graduation:
             if topic and re.search(rf"(?<![\w]){re.escape(topic.lower())}(?![\w])", line.lower()):
                 v.append(Violation("profile.md", "banned_topic", f'"{topic}" in {line!r}'))
         if grad.search(masked):
-            v.append(Violation("profile.md", "graduation", f"graduation year in {line!r}"))
+            v.append(Violation("profile.md", "graduation", f"graduation date in {line!r}"))
     return v

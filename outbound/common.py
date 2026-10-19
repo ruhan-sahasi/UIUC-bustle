@@ -182,25 +182,33 @@ def load_targets(path: Path | None = None, *, enabled_only: bool = True) -> list
 
 
 def pin_slugs(path: Path | None = None) -> list[str]:
-    """Write each enabled target's slug into targets.csv once, so editing the role wording later
-    cannot silently turn one target into a new one (new sequence, new reveals, more recruiters)."""
+    """Write each target's slug into targets.csv once, so editing the role wording later cannot
+    silently turn one target into a new one (new sequence, new reveals, more recruiters)."""
     path = path or (data_dir() / "targets.csv")
     if not path.exists():
         return []
     with path.open(newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        fields = list(reader.fieldnames or [])
-        rows = list(reader)
+        raw_rows = list(csv.reader(f))
+    if not raw_rows:
+        return []
+    header = [h.strip() for h in raw_rows[0]]
+    if any(not h for h in header) or len(set(header)) != len(header):
+        raise ConfigError("targets.csv has a blank or repeated column name in its first row; fix the header "
+                          "(columns: " + ", ".join(TARGET_COLUMNS) + ")")
+    rows = []
+    for n, values in enumerate(raw_rows[1:], start=2):
+        if len(values) > len(header) and any(v.strip() for v in values[len(header):]):
+            raise ConfigError(f"targets.csv line {n} has more cells than columns; a comma inside a value needs "
+                              "quotes, e.g. \"Software Engineer Intern, Summer 2027\"")
+        rows.append({h: (values[i] if i < len(values) else "") for i, h in enumerate(header)})
     pinned = []
     for row in rows:
-        if (row.get("slug") or "").strip() or not row.get("company") or not row.get("role"):
+        if (row.get("slug") or "").strip() or not row.get("company", "").strip() or not row.get("role", "").strip():
             continue
         row["slug"] = slugify(f"{row['company'].strip()} {row['role'].strip()}")
         pinned.append(row["slug"])
     if pinned:
-        if "slug" not in fields:
-            fields.append("slug")
-        write_csv(path, rows, fields)
+        write_csv(path, rows, header if "slug" in header else [*header, "slug"])
     return pinned
 
 

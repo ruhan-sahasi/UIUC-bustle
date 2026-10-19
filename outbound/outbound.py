@@ -68,12 +68,25 @@ class Blocked(Exception):
     """A preflight check failed; the message says what to do. Nothing was sent."""
 
 
+def gate(problems, *, force: bool, name: str) -> None:
+    """Print every problem. --force skips style rules only; safety rules (resume, review markers, merge
+    fields, structure) always block, because breaking them sends something false or broken."""
+    if not problems:
+        return
+    safety = [p for p in problems if p.safety]
+    lines = [f"{name}:"] + [f"  - {p}" for p in problems]
+    if safety:
+        raise Blocked("\n".join(lines + ["These cannot be skipped with --force; fix them first. Nothing was sent."]))
+    if not force:
+        raise Blocked("\n".join(lines + ["Fix them, or pass --force to go ahead with these style issues."]))
+    print("\n".join(lines + ["Going ahead anyway because of --force."]))
+
+
 def preflight(a: Apollo, target, profile, args, *, need_campaign: bool):
     """Every check that must pass before anyone is enrolled, shared by launch and enroll."""
     path = seq_path(target.slug)
     seq, problems = lint_target(target, profile)
-    if problems and not getattr(args, "force", False):
-        raise Blocked(f"{path.name} has issues; fix them (or pass --force):\n" + "\n".join(f"  - {p}" for p in problems))
+    gate(problems, force=getattr(args, "force", False), name=f"{path.name} has issues")
     rows = pending_batch(target.slug)
     if not rows:
         raise Blocked(f"No new recruiters to enroll for {target.slug}. Run: python3 outbound.py hunt --target "
@@ -290,8 +303,10 @@ def cmd_create(args) -> int:
     target = pick_targets(load_targets(), args.target)[0]
     profile = load_profile()
     seq, problems = lint_target(target, profile)
-    if problems and not args.force:
-        print("Fix these first (or pass --force):\n" + "\n".join(f"  - {p}" for p in problems))
+    try:
+        gate(problems, force=args.force, name=f"{seq_path(target.slug).name} has issues")
+    except Blocked as exc:
+        print(exc)
         return 1
     a = apollo()
     attach_mode = not profile.resume_is_link(target.track)
@@ -505,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     cr = add("create", cmd_create, "push the copy to an Apollo sequence (paused unless --activate)", target=True,
              target_required=True)
     cr.add_argument("--activate", action="store_true")
-    cr.add_argument("--force", action="store_true", help="push even with style issues")
+    cr.add_argument("--force", action="store_true", help="push despite style issues (never resume or review checks)")
     cr.add_argument("--yes", action="store_true")
     cr.add_argument("--resume-attached", action="store_true", help="you checked email 1 has your resume in Apollo")
     cr.add_argument("--max-per-day", type=int, default=10)
@@ -515,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--mailbox")
         sp.add_argument("--yes", action="store_true", help="skip the final typed confirmation (never the resume check)")
         sp.add_argument("--resume-attached", action="store_true", help="you checked email 1 has your resume in Apollo")
-        sp.add_argument("--force", action="store_true", help="go ahead even with style issues")
+        sp.add_argument("--force", action="store_true", help="go ahead despite style issues (never resume or review checks)")
         if name == "launch":
             sp.add_argument("--max-per-day", type=int, default=10)
         else:
