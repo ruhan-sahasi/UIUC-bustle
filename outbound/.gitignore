@@ -1,0 +1,13 @@
+# Personal data stays on your machine (this repo is public). Only code and *.example files are tracked.
+.env
+profile.md
+targets.csv
+contacts.csv
+batch-*.csv
+campaigns.csv
+enrolled.csv
+*.tmp
+sequences/*.md
+!sequences/example.md
+.venv/
+__pycache__/
