@@ -48,10 +48,19 @@ python3 outbound.py stats                       # delivered, opened, replied per
 - `Resume: attach` (default). The first `launch` creates the sequence paused and tells you where to
   click: attach the PDF to email 1 and turn the sequence on in Apollo. The second `launch` enrolls the
   recruiters after your confirm. It never re-uploads the copy after you attach, so the attachment
-  cannot be dropped by an update.
+  cannot be dropped by an update. If Apollo does not report an attachment on email 1, launch asks you
+  directly; `--yes` never answers that question (pass `--resume-attached` once you have checked).
 - `Resume: https://...` (a public link, e.g. Google Drive "anyone with the link"). The link is added to
   email 1 and `launch` does everything in one pass. A link in a first email is slightly worse for
   deliverability, which matters little at this volume.
+
+`lint` checks the copy against the current mode, so copy drafted for one mode cannot launch under the
+other: after switching, run `draft --redo --target <target>` or fix email 1 by hand.
+
+**Review markers.** A draft can start with a `NO VERIFIED FACT` line (research found nothing it could
+verify, so the company paragraph has no specifics) or a `RESEARCH INCOMPLETE` line (the research turn
+was cut off, so eligibility was not fully checked). Launch is blocked until you have read the copy and
+deleted the line.
 
 ## Commands
 
@@ -64,8 +73,8 @@ python3 outbound.py stats                       # delivered, opened, replied per
 | `draft [--target T] [--redo]` | research the role with Claude, write `sequences/T.md` | about $0.20 to $0.50 |
 | `lint [--target T]` | check the copy against the style rules | free |
 | `launch --target T` | push the copy, activate, enroll after your typed yes | Apollo sends |
-| `create --target T [--activate]` | push the copy only (e.g. after editing) | free |
-| `enroll --target T [--dry-run]` | enroll new batch rows into an existing sequence | Apollo sends |
+| `create --target T [--activate]` | push the copy only, e.g. after editing (re-check the resume attachment after) | free |
+| `enroll --target T [--dry-run]` | enroll new batch rows into an existing sequence, same checks as launch | Apollo sends |
 | `stats` | per-sequence progress from Apollo | free |
 | `mailboxes [--save ID]` | list connected mailboxes, pick the sender | free |
 | `search --domain D`, `match --id ID`, `org --domain D` | debugging lookups | match costs 1 credit |
@@ -84,13 +93,13 @@ id, so re-running never pays for the same person twice, and `--max` caps credits
 
 | File | What it is | In git |
 |---|---|---|
-| `targets.csv` | roles, one row each (edit in Numbers) | no |
+| `targets.csv` | roles, one row each (edit in Numbers). The `slug` column is filled in on first use; leave it, so editing the role text later keeps the same target | no |
 | `profile.md` | your settings, signature, the only facts the writer may use, never-mention list, voice | no |
 | `contacts.csv` | every revealed person, resumable | no |
 | `batch-<target>.csv` | the enroll-ready cut | no |
 | `sequences/<target>.md` | the copy: subject, Email 1 (day 0), Email 2 (day 5), research notes (never sent) | no |
 | `campaigns.csv` | Apollo sequence id per target, plus a hash of the copy last pushed | no |
-| `enrolled.csv` | who was enrolled where and when, plus anyone Apollo skipped and why | no |
+| `enrolled.csv` | who was enrolled where and when, anyone Apollo skipped and why, and `enroll_unknown` rows when Apollo failed mid-request (check those in Apollo; they are never offered again) | no |
 | `.env` | keys and the chosen mailbox | no |
 
 ## Operational notes (from the live vestige runs)
@@ -103,6 +112,9 @@ id, so re-running never pays for the same person twice, and `--max` caps credits
   bounce rate. Skips are logged in `enrolled.csv`.
 - A sequence without a schedule never sends, and touches must be `approved`; `create` sets both.
 - Mailbox records keep stale `revoked_at` fields; trust `active` and `needs_reauth_at`.
+- Rate limits use fixed one-minute windows plus hourly and daily caps. The client waits through up to
+  three windows, then stops the run without marking anyone as seen, so the next run picks up where it
+  left off. A POST that timed out is never re-sent blindly (it may already have been processed).
 
 ## Replies
 

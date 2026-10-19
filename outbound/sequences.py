@@ -21,6 +21,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,8 @@ from apollo_api import Apollo, ApolloError
 from common import data_dir, read_csv, write_csv
 
 ENROLLED_COLUMNS = ["date", "target", "campaign_id", "contact_id", "name", "email", "title", "status", "detail"]
+# A person with any of these in enrolled.csv is never offered again.
+BLOCKING_STATUSES = {"enrolled", "enroll_unknown"}
 CAMPAIGN_COLUMNS = ["target", "campaign_id", "name", "copy_hash", "updated_at"]
 
 
@@ -39,6 +42,7 @@ class Sequence:
     emails: list[str]
     days: list[int]
     notes: str = ""
+    preamble: str = ""
 
     @property
     def waits(self) -> list[int]:
@@ -48,37 +52,72 @@ class Sequence:
         return out
 
 
+HEADING = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$")
+
+
 def parse_md(text: str, *, source: str = "sequence") -> Sequence:
-    sections = re.split(r"^## ", text, flags=re.M)
-    subject_sec = next((s for s in sections if s.lower().startswith("subject line")), None)
-    if subject_sec is None:
+    """Parse the copy. Anything that could silently change what is sent is an error, not a guess."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    sections: list[tuple[str, int, list[str]]] = []  # (title, line number, lines)
+    preamble: list[str] = []
+    for n, line in enumerate(text.split("\n"), start=1):
+        m = HEADING.match(line)
+        if m and not line.lstrip().startswith(">"):
+            sections.append((m.group(1), n, []))
+        elif sections:
+            sections[-1][2].append(line)
+        else:
+            preamble.append(line)
+    subject, emails, notes = None, [], ""
+    for title, n, lines in sections:
+        lowered = title.lower()
+        if lowered.startswith("subject"):
+            inline = re.sub(r"(?i)^subject( line)?\s*:?\s*", "", title).strip()
+            rest = [line.strip() for line in lines if line.strip()]
+            subject = inline or (re.sub(r"^>\s?", "", rest[0]).strip() if rest else "")
+            subject = re.sub(r"(?i)^subject\s*:\s*", "", subject)
+        elif re.match(r"(?i)email\s*\d+\b", title):
+            number = int(re.match(r"(?i)email\s*(\d+)", title).group(1))
+            day = re.search(r"(?i)\bday\s+(\d+)", title)
+            body_lines = []
+            for offset, line in enumerate(lines, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if not stripped.startswith(">"):
+                    raise ValueError(f"{source} line {n + offset}: every line of an email starts with '>' "
+                                     f"(this one would be dropped): {stripped[:60]!r}")
+                body_lines.append(re.sub(r"^>\s?", "", stripped).rstrip())
+            body = "\n".join(body_lines).strip()
+            body = re.sub(r"\n{3,}", "\n\n", body)
+            if not body:
+                raise ValueError(f"{source} line {n}: email {number} has no body (each line starts with >)")
+            emails.append((number, int(day.group(1)) if day else None, body, n))
+        elif lowered.startswith("research notes"):
+            notes = "\n".join([title, *lines]).strip()
+        elif lowered.startswith("sequence"):
+            preamble += lines
+        elif re.search(r"(?i)\b(email|follow[- ]?up|touch)\b", title) and not lowered.startswith("sequence"):
+            raise ValueError(f"{source} line {n}: heading {title!r} looks like an email but is not "
+                             "'## Email N (day D)'; rename it or it would not be sent")
+    if subject is None:
         raise ValueError(f'{source}: no "## Subject line" section')
-    subject_lines = [line.strip() for line in subject_sec.splitlines()[1:] if line.strip() and not line.startswith(">")]
-    subject = subject_lines[0] if subject_lines else ""
-    found: list[tuple[int, int, str]] = []
-    for sec in sections:
-        m = re.match(r"Email\s+(\d+)\b(.*)", sec)
-        if not m:
-            continue
-        number = int(m.group(1))
-        day_match = re.search(r"\bday\s+(\d+)", m.group(2), re.I)
-        body = "\n".join(re.sub(r"^> ?", "", line) for line in sec.splitlines()[1:] if line.startswith(">")).strip()
-        if not body:
-            raise ValueError(f"{source}: email {number} has no body (each line of a body starts with >)")
-        found.append((number, int(day_match.group(1)) if day_match else -1, body))
-    if not found:
-        raise ValueError(f'{source}: no "## Email 1" section')
-    found.sort()
-    if [n for n, _, _ in found] != list(range(1, len(found) + 1)):
+    if not emails:
+        raise ValueError(f'{source}: no "## Email 1 (day 0)" section')
+    emails.sort()
+    if [e[0] for e in emails] != list(range(1, len(emails) + 1)):
         raise ValueError(f"{source}: emails must be numbered 1, 2, 3 in order")
-    days, last = [], None
-    for _number, day, _ in found:
-        if day < 0:
-            day = 0 if last is None else last + 5
+    days = []
+    for number, day, _body, n in emails:
+        if day is None:
+            if number != 1:
+                raise ValueError(f"{source} line {n}: say which day email {number} goes out, e.g. (day 5)")
+            day = 0
+        if days and day <= days[-1]:
+            raise ValueError(f"{source} line {n}: email {number} must come on a later day than email {number - 1}")
         days.append(day)
-        last = day
-    notes = next((s for s in sections if s.lower().startswith("research notes")), "")
-    return Sequence(subject=subject, emails=[b for _, _, b in found], days=days, notes=notes)
+    return Sequence(subject=subject, emails=[e[2] for e in emails], days=days, notes=notes,
+                    preamble="\n".join(preamble).strip())
 
 
 def render_md(seq: Sequence, *, title: str, header_lines: list[str]) -> str:
@@ -156,10 +195,17 @@ def attachment_counts(apollo: Apollo, campaign_id: str) -> list[int]:
 
 def sync_sequence(apollo: Apollo, seq: Sequence, *, name: str, campaign_id: str | None = None,
                   activate: bool = False, max_per_day: int | None = None, include_signature: bool = False,
-                  sleep: Callable[[float], None] = lambda s: None) -> tuple[str, bool, list[StepSummary]]:
-    """Create the sequence (or fill an existing one) from the copy, in one full-state PUT."""
+                  on_created: Callable[[str], None] | None = None,
+                  sleep: Callable[[float], None] | None = None) -> tuple[str, bool, list[StepSummary]]:
+    """Create the sequence (or fill an existing one) from the copy, in one full-state PUT.
+
+    on_created runs the moment a new campaign exists, so a failure later in the sync never leaves an
+    orphan that the next run would duplicate."""
+    sleep = sleep or time.sleep
     if campaign_id is None:
         campaign_id = apollo.create_campaign(name)["id"]
+        if on_created:
+            on_created(campaign_id)
     detail = apollo.campaign(campaign_id)
     while len(detail.get("emailer_steps") or []) < len(seq.emails):
         apollo.add_step(campaign_id)
@@ -232,44 +278,55 @@ class EnrollResult:
 
 def enroll(apollo: Apollo, *, slug: str, campaign_id: str, rows: list[dict], mailbox_id: str,
            enrolled_path: Path | None = None, log: Callable[[str], None] = print,
-           sleep: Callable[[float], None] = lambda s: None) -> EnrollResult:
+           sleep: Callable[[float], None] | None = None) -> EnrollResult:
+    """Enroll rows into the campaign. The ledger is written even if Apollo fails halfway: rows whose
+    outcome is unknown are recorded as enroll_unknown and are never offered again until checked."""
+    sleep = sleep or time.sleep
     enrolled_path = enrolled_path or (data_dir() / "enrolled.csv")
     ledger = read_csv(enrolled_path)
-    already = {r["email"].lower() for r in ledger if r.get("status") == "enrolled" and r.get("email")}
+    already = {r["email"].lower() for r in ledger if r.get("status") in BLOCKING_STATUSES and r.get("email")}
     result = EnrollResult()
+    unknown: list[dict] = []
     by_id: dict[str, dict] = {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    for row in rows:
-        email = (row.get("email") or "").strip()
-        if not email or email.lower() in already:
-            continue
-        try:
-            contact = apollo.find_contact(email) or apollo.create_contact(
-                first=row.get("first", ""), last=row.get("last", ""), email=email,
-                company=row.get("company", ""), title=row.get("title", ""))
-        except ApolloError as exc:
-            result.skipped.append({**row, "detail": f"contact failed: {exc}"})
-            continue
-        if contact.get("id"):
-            by_id[contact["id"]] = row
-        sleep(0.4)
-    if by_id:
-        response = apollo.add_contacts(campaign_id, list(by_id), mailbox_id)
-        skipped = response.get("skipped_contact_ids") or {}
-        for cid, row in by_id.items():
-            if cid in skipped:
-                reason = skipped[cid]
-                reason = reason if isinstance(reason, str) else json.dumps(reason)
-                result.skipped.append({**row, "contact_id": cid, "detail": f"skipped by Apollo: {reason}"})
-            else:
-                result.enrolled.append({**row, "contact_id": cid})
-    for status, items in (("enrolled", result.enrolled), ("skipped", result.skipped)):
-        for item in items:
-            ledger.append({"date": now, "target": slug, "campaign_id": campaign_id, "contact_id": item.get("contact_id", ""),
-                           "name": item.get("name", ""), "email": item.get("email", ""), "title": item.get("title", ""),
-                           "status": status, "detail": item.get("detail", "")})
-            log(f"[enroll] {status}: {item.get('name')} <{item.get('email')}> {item.get('detail', '')}".rstrip())
-    write_csv(enrolled_path, ledger, ENROLLED_COLUMNS)
+    try:
+        for row in rows:
+            email = (row.get("email") or "").strip()
+            if not email or email.lower() in already:
+                continue
+            try:
+                contact = apollo.find_contact(email) or apollo.create_contact(
+                    first=row.get("first", ""), last=row.get("last", ""), email=email,
+                    company=row.get("company", ""), title=row.get("title", ""))
+            except ApolloError as exc:
+                result.skipped.append({**row, "detail": f"contact failed: {exc}"})
+                continue
+            if contact.get("id"):
+                by_id[contact["id"]] = row
+            sleep(0.4)
+        if by_id:
+            try:
+                response = apollo.add_contacts(campaign_id, list(by_id), mailbox_id)
+            except Exception as exc:
+                unknown = [{**row, "contact_id": cid, "detail": f"add_contact_ids failed ({exc}); check the "
+                            "sequence in Apollo before retrying"} for cid, row in by_id.items()]
+                raise
+            skipped = response.get("skipped_contact_ids") or {}
+            for cid, row in by_id.items():
+                if cid in skipped:
+                    reason = skipped[cid] if isinstance(skipped[cid], str) else json.dumps(skipped[cid])
+                    result.skipped.append({**row, "contact_id": cid, "detail": f"skipped by Apollo: {reason}"})
+                else:
+                    result.enrolled.append({**row, "contact_id": cid})
+    finally:
+        for status, items in (("enrolled", result.enrolled), ("skipped", result.skipped), ("enroll_unknown", unknown)):
+            for item in items:
+                ledger.append({"date": now, "target": slug, "campaign_id": campaign_id,
+                               "contact_id": item.get("contact_id", ""), "name": item.get("name", ""),
+                               "email": item.get("email", ""), "title": item.get("title", ""), "status": status,
+                               "detail": item.get("detail", "")})
+                log(f"[enroll] {status}: {item.get('name')} <{item.get('email')}> {item.get('detail', '')}".rstrip())
+        write_csv(enrolled_path, ledger, ENROLLED_COLUMNS)
     return result
 
 

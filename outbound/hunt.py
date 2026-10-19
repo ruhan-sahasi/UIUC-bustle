@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from apollo_api import Apollo
+from apollo_api import Apollo, ApolloStop
 from common import Target, data_dir, on_domain, read_csv, split_name, write_csv
 
 # Who to look for, in the order Apollo search is asked. Ranking below decides who gets revealed.
@@ -84,7 +84,7 @@ def rank(people: list[dict], target: Target, source: str) -> list[tuple[float, d
         if not pid or pid in seen or not title or EXCLUDE.search(title):
             continue
         seen.add(pid)
-        if p.get("has_email") is False:  # no email behind it: revealing would waste a credit
+        if not p.get("has_email"):  # no email behind it (or unknown): revealing would waste a credit
             continue
         if source == "recruiter" and not is_recruiter(title):
             continue
@@ -118,10 +118,13 @@ def _search(apollo: Apollo, target: Target, titles: list[str], pages: int = 2) -
 
 
 def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_reveals: int = 10,
-         path: Path | None = None, pause: float = 0.8, sleep: Callable[[float], None] = time.sleep,
+         path: Path | None = None, pause: float = 0.8, sleep: Callable[[float], None] | None = None,
          log: Callable[[str], None] = print) -> HuntReport:
+    sleep = sleep or time.sleep
     path = path or (data_dir() / "contacts.csv")
     rows = read_csv(path)
+    # Errored reveals are retried on a later run; only real Apollo answers count as known.
+    rows = [r for r in rows if not r.get("status", "").startswith("error")]
     known = {r["apollo_person_id"] for r in rows if r.get("apollo_person_id")}
     report = HuntReport()
     try:
@@ -143,14 +146,15 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
                     break
                 if p["id"] in known:
                     continue
-                known.add(p["id"])
                 try:
                     person = apollo.match(id=p["id"])
-                except Exception as exc:  # one bad reveal should not end the run
-                    rows.append({"target": target.slug, "status": f"error: {str(exc)[:80]}", "apollo_person_id": p["id"],
-                                 "name": p.get("first_name", ""), "title": p.get("title", "")})
-                    report.revealed += 1
+                except ApolloStop:
+                    raise  # rate limit, bad key, no credits: stop the run, keep what was paid for
+                except Exception as exc:  # one odd answer should not end the run; retried next time
+                    log(f"[hunt] {target.slug}: reveal of {p.get('first_name', '')} failed ({str(exc)[:80]}), "
+                        "will retry next run")
                     continue
+                known.add(p["id"])
                 report.revealed += 1
                 first, last = person["first_name"], person["last_name"]
                 if not first:
@@ -182,8 +186,10 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
 
 
 def enrolled_emails(path: Path | None = None) -> set[str]:
+    """Everyone enrolled anywhere, or whose enrollment outcome is unknown: never offered again."""
     path = path or (data_dir() / "enrolled.csv")
-    return {r["email"].lower() for r in read_csv(path) if r.get("email") and r.get("status") == "enrolled"}
+    return {r["email"].lower() for r in read_csv(path)
+            if r.get("email") and r.get("status") in ("enrolled", "enroll_unknown")}
 
 
 def cut(targets: list[Target], *, contacts_path: Path | None = None, enrolled_path: Path | None = None,

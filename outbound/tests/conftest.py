@@ -183,13 +183,31 @@ class FakeClaude:
         bad["subject"] = "Acme's internship"
         self.drafts = drafts or [bad, GOOD]
         self.draft_calls = 0
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create, stream=self.stream))
+        self.research_override = None  # set to a callable(kw, round) -> response to script research
+
+    def stream(self, **kw):
+        response = self.create(**kw)
+
+        class _Stream:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def get_final_message(self_inner):
+                return response
+
+        return _Stream()
 
     def create(self, **kw):
         self.requests.append(kw)
         assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default"
         if kw.get("tools"):
             self.rounds += 1
+            if self.research_override:
+                return self.research_override(kw, self.rounds)
             if self.rounds == 1:
                 return SimpleNamespace(stop_reason="pause_turn", usage=_usage(1), content=[
                     SimpleNamespace(type="web_search_tool_result", content=[
@@ -217,6 +235,9 @@ PROFILE_MD = (HERE / "profile.example.md").read_text()
 @pytest.fixture
 def workdir(tmp_path, monkeypatch):
     """A data directory with the example profile and one Acme target."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
     monkeypatch.setenv("OUTBOUND_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("APOLLO_API_KEY", "test-key")
     (tmp_path / "sequences").mkdir()

@@ -71,6 +71,25 @@ class Profile:
     def experiences(self) -> str:
         return self.sections.get("Experiences", "").strip()
 
+    def experiences_for(self, track: str) -> str:
+        """Experience blocks whose `### Title (tags)` heading includes this track, plus untagged ones."""
+        blocks = re.split(r"(?m)^(?=###\s)", self.experiences)
+        keep = []
+        for block in blocks:
+            if not block.strip():
+                continue
+            heading = re.match(r"^###\s+.*?\(([^)]*)\)\s*$", block.splitlines()[0])
+            tags = {t.strip().lower() for t in heading.group(1).split(",")} if heading else set()
+            if not block.startswith("###") or not tags or track.lower() in tags:
+                keep.append(block.strip())
+        return "\n\n".join(keep)
+
+    @property
+    def graduation_years(self) -> str:
+        """Every graduation year mentioned anywhere in the profile settings and notes (e.g. 2028 and 2029)."""
+        top = self.raw.split("\n## ", 1)[0]
+        return " ".join(sorted(set(re.findall(r"20\d\d", " ".join([self.graduation, *re.findall(r"(?i)graduat.*|eligib.*", top)])))))
+
     @property
     def voice(self) -> str:
         return self.sections.get("Voice", "").strip()

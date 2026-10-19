@@ -1,5 +1,9 @@
 """Style checks for sequence copy. The writer is told these rules; this is what enforces them,
-and it runs again on whatever you hand-edit in sequences/<target>.md before anything launches."""
+and it runs again on whatever you hand-edit in sequences/<target>.md before anything launches.
+
+Every line of an email is checked except lines that exactly match the fixed sign-off and signature
+from profile.md (those are checked once, on their own, by check_fixed_lines).
+"""
 from __future__ import annotations
 
 import re
@@ -8,9 +12,9 @@ from dataclasses import dataclass
 APOSTROPHES = "'’‘ʼ"
 FORBIDDEN = {"'": "apostrophe", "’": "curly apostrophe", "‘": "curly quote", "ʼ": "apostrophe",
              "—": "em dash", "–": "en dash", "~": "tilde"}
-BANNED_WORDS = ["spearheaded", "spearhead", "leveraged", "leverage", "leveraging", "utilized", "utilize", "robust",
-                "seamless", "seamlessly", "cutting-edge", "passionate", "delve", "thrilled", "synergy",
-                "game-changer", "testament", "tapestry", "innovative", "dynamic"]
+# Hard bans: the user's own list. Each is matched as a stem, so "utilizing" and "cutting edge" count too.
+BANNED_WORDS = ["spearheaded", "leveraged", "utilized", "robust", "seamless", "cutting-edge", "passionate", "delve",
+                "thrilled", "synergy", "game-changer", "testament", "tapestry"]
 BANNED_PHRASES = ["I hope this email finds you well", "I hope you are doing well", "not just", "To whom it may concern",
                   "Dear Sir", "Dear Hiring", "just bumping", "circling back"]
 MERGE_FIELDS = {"first", "last", "company"}
@@ -25,8 +29,11 @@ CONTRACTIONS = {
 _CONTRACTION = re.compile(
     r"\b(" + "|".join(re.escape(k).replace("'", f"[{APOSTROPHES}]") for k in CONTRACTIONS) + r")\b", re.I)
 SEASON_YEAR = re.compile(r"\b(summer|fall|autumn|spring|winter)\s+20\d\d\b", re.I)
-NUMBER = re.compile(r"(?<![\w.])\$?\d[\d,]*(?:\.\d+)?(?:%|\+|[kKmMbB]\b)?")
-GRADUATION = re.compile(r"\b(graduat\w*|class of)\b|\b(may|june|december|dec)\s+20[2-3]\d\b", re.I)
+# A number, but not the digits inside names like 10-K, S-1, a16z or 3D.
+NUMBER = re.compile(r"(?<![\w.$-])\$?\d[\d,]*(?:\.\d+)?(?:%|\+|[kKmMbB]\b)?(?![\w-])")
+URL = re.compile(r"https?://\S+|www\.\S+")
+GREETING = re.compile(r"^\s*(hi|hello|hey|dear)\b", re.I)
+SIGN_OFF = re.compile(r"^\s*(warm regards|best regards|best|thank you|thanks|sincerely|cheers),?\s*$", re.I)
 
 
 @dataclass
@@ -49,11 +56,28 @@ def expand_contractions(text: str) -> str:
 
 
 def count_numbers(text: str) -> int:
-    return len(NUMBER.findall(SEASON_YEAR.sub(" ", text)))
+    return len(NUMBER.findall(SEASON_YEAR.sub(" ", URL.sub(" ", text))))
 
 
 def words(text: str) -> int:
-    return len(re.findall(r"[A-Za-z0-9][\w.&/-]*", text))
+    return len(re.findall(r"[A-Za-z0-9][\w.&/-]*", URL.sub(" ", text)))
+
+
+def _stem_pattern(word: str) -> re.Pattern:
+    stem = word.lower().strip()
+    if len(stem) > 5:
+        stem = re.sub(r"(ing|ed|es|ly|ness|s|e)$", "", stem)
+    body = re.escape(stem).replace(r"\-", "[- ]?").replace(r"\ ", r"\s+")
+    return re.compile(rf"(?<![\w-]){body}\w*", re.I)
+
+
+def graduation_pattern(graduation: str) -> re.Pattern:
+    """'class of', 'graduate...', and the user's own graduation years (2028, '28)."""
+    years = sorted(set(re.findall(r"20(\d\d)", graduation or "")))
+    alternatives = [r"\bgraduat\w*", r"\bclass of\b"]
+    for yy in years:
+        alternatives += [rf"(?<!\d)20{yy}(?!\d)", rf"[{APOSTROPHES}]{yy}\b"]
+    return re.compile("|".join(alternatives), re.I)
 
 
 def _mask(text: str, allowed: list[str]) -> str:
@@ -62,86 +86,113 @@ def _mask(text: str, allowed: list[str]) -> str:
     return re.sub(r"\{(first|last|company)\}", " ", text)
 
 
-def split_body(body: str, fixed_lines: list[str]) -> tuple[str, str]:
-    """Separate the written paragraphs from the greeting, the fixed sign-off and the signature."""
-    lines = body.splitlines()
-    if lines and re.match(r"^\s*(hi|hello|dear)\b", lines[0], re.I):
-        lines = lines[1:]
+def prose_lines(body: str, fixed_lines: list[str]) -> list[str]:
+    """Every line except the greeting and lines that exactly match a fixed sign-off or signature line."""
     fixed = {f.strip() for f in fixed_lines if f.strip()}
-    prose, tail, in_tail = [], [], False
-    for line in lines:
-        if line.strip() in fixed or re.match(r"^\s*(warm regards|best|thank you|thanks),?\s*$", line, re.I):
-            in_tail = True
-        (tail if in_tail else prose).append(line)
-    return "\n".join(prose).strip(), "\n".join(tail).strip()
+    lines = body.splitlines()
+    if lines and GREETING.match(lines[0]):
+        lines = lines[1:]
+    return [line for line in lines if line.strip() not in fixed and not SIGN_OFF.match(line)]
 
 
-def lint_subject(subject: str, company: str) -> list[Violation]:
+def _shared_checks(text: str, *, where: str, company: str, banned_topics: list[str], extra_banned_words: list[str],
+                   graduation: re.Pattern, allowed_links: list[str], merge_text: str | None = None) -> list[Violation]:
+    v: list[Violation] = []
+    masked = _mask(text, [company, *allowed_links])
+    for ch, label in FORBIDDEN.items():
+        if ch in masked:
+            i = masked.find(ch)
+            v.append(Violation(where, "forbidden_char", f"{label} near ...{masked[max(0, i - 20):i + 20].strip()}..."))
+    if any(re.search(r"\S\s+-{1,2}\s", line) for line in masked.splitlines()):
+        v.append(Violation(where, "forbidden_char", "a hyphen used as a dash; rewrite the sentence"))
+    if re.search(r"[()]", masked):
+        v.append(Violation(where, "parentheses", "no parentheses or asides"))
+    if "!" in masked:
+        v.append(Violation(where, "exclamation", "no exclamation marks"))
+    merge_text = text if merge_text is None else merge_text
+    for name in sorted(set(re.findall(r"\{([^{}]*)\}", merge_text)) - MERGE_FIELDS):
+        v.append(Violation(where, "merge_field", f"{{{name}}} is not a merge field; use {{first}} or {{company}}"))
+    if "{{" in merge_text or "}}" in merge_text or re.search(r"\{[^}]*$|^[^{]*\}", merge_text, re.M):
+        v.append(Violation(where, "merge_field", "write merge fields as {first}, with one brace on each side"))
+    stray = [u for u in URL.findall(text) if not any(u.startswith(a) for a in allowed_links if a)]
+    if stray:
+        v.append(Violation(where, "links", f"no links besides the resume link: {stray}"))
+    lowered = text.lower()
+    for word in BANNED_WORDS + list(extra_banned_words):
+        if word.strip() and _stem_pattern(word).search(masked):
+            v.append(Violation(where, "banned_word", f'"{word}" or a form of it'))
+    for phrase in BANNED_PHRASES:
+        if phrase.lower() in lowered:
+            v.append(Violation(where, "banned_phrase", f'"{phrase}"'))
+    for topic in banned_topics:
+        if topic and re.search(rf"(?<![\w]){re.escape(topic.lower())}(?![\w])", lowered):
+            v.append(Violation(where, "banned_topic", f'never mention "{topic}"'))
+    if graduation.search(masked):
+        v.append(Violation(where, "graduation", "no graduation date or class year"))
+    return v
+
+
+def lint_subject(subject: str, *, company: str, banned_topics: list[str] = (), extra_banned_words: list[str] = (),
+                 graduation: str = "") -> list[Violation]:
     v = []
-    masked = _mask(subject, [company])
     if not subject.strip():
         v.append(Violation("subject", "empty", "write a subject line"))
     if len(subject) > 70:
         v.append(Violation("subject", "length", f"{len(subject)} characters; keep it under 70"))
-    if re.match(r"^\s*(re|fwd?):", subject, re.I):
+    if re.match(r"^\s*(re|fwd?)\s*:", subject, re.I):
         v.append(Violation("subject", "honesty", 'no fake "Re:" or "Fwd:"'))
-    for ch, label in FORBIDDEN.items():
-        if ch in masked:
-            v.append(Violation("subject", "forbidden_char", label))
+    if count_numbers(_mask(subject, [company])) > 1:
+        v.append(Violation("subject", "numbers", "at most 1 number in the subject"))
+    v += _shared_checks(subject, where="subject", company=company, banned_topics=list(banned_topics),
+                        extra_banned_words=list(extra_banned_words), graduation=graduation_pattern(graduation),
+                        allowed_links=[])
     return v
 
 
 def lint_email(body: str, *, where: str, first_touch: bool, company: str, opening: str = "",
                fixed_lines: list[str] | None = None, banned_topics: list[str] | None = None,
-               extra_banned_words: list[str] | None = None, allowed_links: list[str] | None = None) -> list[Violation]:
+               extra_banned_words: list[str] | None = None, allowed_links: list[str] | None = None,
+               graduation: str = "") -> list[Violation]:
     v: list[Violation] = []
-    prose, _tail = split_body(body, fixed_lines or [])
-    masked = _mask(prose, [company])
-    if not re.match(r"^\s*hi\s+\{first\},?\s*$", body.splitlines()[0] if body.strip() else "", re.I):
+    lines = body.splitlines()
+    if not lines or not re.match(r"^\s*hi\s+\{first\},?\s*$", lines[0], re.I):
         v.append(Violation(where, "greeting", 'start with "Hi {first}," so Apollo fills in the name'))
-    for field_name in set(re.findall(r"\{([^{}]*)\}", body)) - MERGE_FIELDS:
-        v.append(Violation(where, "merge_field", f"{{{field_name}}} is not a merge field; use {{first}} or {{company}}"))
-    if "{{" in body:
-        v.append(Violation(where, "merge_field", "write merge fields as {first}, not {{first_name}}"))
-    for ch, label in FORBIDDEN.items():
-        if ch in masked:
-            i = masked.find(ch)
-            v.append(Violation(where, "forbidden_char", f"{label} near ...{masked[max(0, i - 20):i + 20]}..."))
-    if re.search(r"\s-{1,2}\s", masked):
-        v.append(Violation(where, "forbidden_char", "a hyphen used as a dash; rewrite the sentence"))
-    if re.search(r"[()]", masked):
-        v.append(Violation(where, "parentheses", "no parentheses or asides"))
-    if "!" in masked:
-        v.append(Violation(where, "exclamation", "no exclamation marks in the paragraphs"))
-    links = re.findall(r"https?://\S+|www\.\S+", prose)
-    stray = [link for link in links if not any(link.startswith(a) for a in (allowed_links or []) if a)]
-    if stray:
-        v.append(Violation(where, "links", f"no links besides the resume link: {stray}"))
-    text = prose.lower()
-    for word in BANNED_WORDS + (extra_banned_words or []):
-        if re.search(rf"(?<![\w-]){re.escape(word.lower())}(?![\w-])", text):
-            v.append(Violation(where, "banned_word", f'"{word}"'))
-    for phrase in BANNED_PHRASES:
-        if phrase.lower() in text:
-            v.append(Violation(where, "banned_phrase", f'"{phrase}"'))
-    for topic in banned_topics or []:
-        if topic and re.search(rf"(?<![\w]){re.escape(topic.lower())}(?![\w])", text):
-            v.append(Violation(where, "banned_topic", f'never mention "{topic}"'))
-    if GRADUATION.search(prose):
-        v.append(Violation(where, "graduation", "no graduation date or class year"))
-    n_words = words(prose)
+    if sum(1 for line in lines if re.match(r"^\s*hi\s+\{first\}", line, re.I)) > 1:
+        v.append(Violation(where, "structure", "two greetings in one email; check the ## Email headings"))
+    prose = "\n".join(prose_lines(body, fixed_lines or [])).strip()
+    links = allowed_links or []
+    v += _shared_checks(prose, where=where, company=company, banned_topics=banned_topics or [],
+                        extra_banned_words=extra_banned_words or [], graduation=graduation_pattern(graduation),
+                        allowed_links=links, merge_text=body)
+    masked = _mask(prose, [company, *links])
+    n_words, n_numbers = words(prose), count_numbers(masked)
+    if n_numbers > 3:
+        v.append(Violation(where, "numbers", f"{n_numbers} numbers; use at most 3"))
     if first_touch:
         if opening and not " ".join(prose.split()).startswith(" ".join(opening.split())):
             v.append(Violation(where, "opening", f'start with exactly: "{opening}"'))
         if company and company.lower() not in prose.lower():
             v.append(Violation(where, "company", f"name {company} at least once"))
-        if count_numbers(masked) > 3:
-            v.append(Violation(where, "numbers", f"{count_numbers(masked)} numbers; use at most 3"))
         if not 90 <= n_words <= 190:
             v.append(Violation(where, "length", f"{n_words} words; aim for 90 to 190"))
-    else:
-        if count_numbers(masked) > 1:
-            v.append(Violation(where, "numbers", "a follow-up needs at most 1 number"))
-        if not 20 <= n_words <= 90:
-            v.append(Violation(where, "length", f"{n_words} words; a follow-up is 20 to 90"))
+    elif not 20 <= n_words <= 90:
+        v.append(Violation(where, "length", f"{n_words} words; a follow-up is 20 to 90"))
+    return v
+
+
+def check_fixed_lines(lines: list[str], *, banned_topics: list[str], graduation: str) -> list[Violation]:
+    """The profile's closing, sign-off and signature go into every email, so check them once.
+    Phone numbers and parentheses are fine in a signature."""
+    v = []
+    grad = graduation_pattern(graduation)
+    for line in lines:
+        masked = URL.sub(" ", line)
+        for ch, label in FORBIDDEN.items():
+            if ch in masked:
+                v.append(Violation("profile.md", "forbidden_char", f"{label} in {line!r}"))
+        for topic in banned_topics:
+            if topic and re.search(rf"(?<![\w]){re.escape(topic.lower())}(?![\w])", line.lower()):
+                v.append(Violation("profile.md", "banned_topic", f'"{topic}" in {line!r}'))
+        if grad.search(masked):
+            v.append(Violation("profile.md", "graduation", f"graduation year in {line!r}"))
     return v

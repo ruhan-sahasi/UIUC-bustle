@@ -69,7 +69,7 @@ def test_attach_mode_two_pass_launch(cli, workdir, capsys, monkeypatch):
 
     # Still paused: refuses.
     assert run("launch", "--target", slug(), "--yes") == 1
-    assert "still paused" in capsys.readouterr().out
+    assert "sequence is paused" in capsys.readouterr().out
 
     # Edited copy after the push: refuses until it is pushed again.
     path = workdir / "sequences" / f"{slug()}.md"
@@ -100,7 +100,7 @@ def test_launch_blocks_on_style_issues_and_missing_mailbox(cli, workdir, capsys,
     path.write_text(path.read_text().replace("I recently applied", "I’ve recently applied"))
     assert run("lint", "--target", slug()) == 1
     assert run("launch", "--target", slug(), "--yes") == 1
-    assert "style issues" in capsys.readouterr().out
+    assert "has issues" in capsys.readouterr().out
     path.write_text(path.read_text().replace("I’ve recently applied", "I recently applied"))
     monkeypatch.setenv("APOLLO_MAILBOX_ID", "nope")
     assert run("launch", "--target", slug(), "--yes") == 1

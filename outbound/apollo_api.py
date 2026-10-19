@@ -19,41 +19,58 @@ class ApolloError(Exception):
     pass
 
 
+class ApolloStop(ApolloError):
+    """Retrying will not help this run: rate limited, bad key, or plan limits. Stop and come back later."""
+
+
 class Apollo:
     def __init__(self, api_key: str, *, http: httpx.Client | None = None,
-                 sleep: Callable[[float], None] = time.sleep, base: str = BASE):
+                 sleep: Callable[[float], None] | None = None, base: str = BASE, rate_limit_waits: int = 3):
         if not api_key:
             raise ApolloError("No APOLLO_API_KEY. Add it to outbound/.env (Apollo: Settings > Integrations > API).")
         self.key = api_key
         self.http = http or httpx.Client(timeout=httpx.Timeout(45.0, connect=15.0))
-        self.sleep = sleep
+        self.sleep = sleep or (lambda seconds: time.sleep(seconds))
         self.base = base.rstrip("/")
+        self.rate_limit_waits = rate_limit_waits
         self.reveals = 0
 
-    def call(self, method: str, path: str, body: dict | None = None, params: dict | None = None,
-             _retried: bool = False) -> dict:
+    def call(self, method: str, path: str, body: dict | None = None, params: dict | None = None) -> dict:
         url = f"{self.base}/{path.lstrip('/')}"
         headers = {"X-Api-Key": self.key, "Content-Type": "application/json", "Cache-Control": "no-cache"}
-        try:
-            resp = self.http.request(method, url, json=body, params=params, headers=headers)
-        except httpx.TransportError as exc:
-            if _retried:
-                raise ApolloError(f"{method} {path}: network error {exc}") from exc
-            self.sleep(5)
-            return self.call(method, path, body, params, _retried=True)
-        if resp.status_code == 429 and not _retried:
-            # Apollo rate limits use fixed one-minute windows.
-            self.sleep(65)
-            return self.call(method, path, body, params, _retried=True)
+        waits, network_retry = 0, False
+        while True:
+            try:
+                resp = self.http.request(method, url, json=body, params=params, headers=headers)
+            except httpx.TransportError as exc:
+                # Re-send only if the request certainly never reached Apollo, or if it is a read.
+                # A POST that timed out after Apollo processed it (add_contact_ids) must not run twice.
+                never_sent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                if network_retry or not (never_sent or method == "GET"):
+                    raise ApolloError(f"{method} {path}: network error {exc!r}; check Apollo before retrying") from exc
+                network_retry = True
+                self.sleep(5)
+                continue
+            if resp.status_code == 429:
+                # Apollo uses fixed one-minute windows (plus hourly and daily caps). Wait through a few.
+                if waits >= self.rate_limit_waits:
+                    raise ApolloStop(f"{method} {path}: Apollo rate limit still hit after {waits} waits of 65s; "
+                                     "run again later (an hourly or daily cap may be reached)")
+                waits += 1
+                self.sleep(65)
+                continue
+            break
         try:
             data = resp.json()
         except ValueError:
             data = {"raw": resp.text[:300]}
         if resp.status_code in (401, 403):
-            raise ApolloError(
+            raise ApolloStop(
                 f"{method} {path} -> HTTP {resp.status_code}: Apollo refused the key or your plan lacks this "
                 f"endpoint. Use a master API key. {str(data)[:200]}"
             )
+        if resp.status_code == 422 and "credit" in str(data).lower():
+            raise ApolloStop(f"{method} {path} -> HTTP 422: out of Apollo credits? {str(data)[:200]}")
         if resp.status_code >= 400:
             raise ApolloError(f"{method} {path} -> HTTP {resp.status_code}: {str(data)[:300]}")
         return data

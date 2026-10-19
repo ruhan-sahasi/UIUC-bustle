@@ -181,6 +181,29 @@ def load_targets(path: Path | None = None, *, enabled_only: bool = True) -> list
     return [t for t in targets if t.enabled] if enabled_only else targets
 
 
+def pin_slugs(path: Path | None = None) -> list[str]:
+    """Write each enabled target's slug into targets.csv once, so editing the role wording later
+    cannot silently turn one target into a new one (new sequence, new reveals, more recruiters)."""
+    path = path or (data_dir() / "targets.csv")
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fields = list(reader.fieldnames or [])
+        rows = list(reader)
+    pinned = []
+    for row in rows:
+        if (row.get("slug") or "").strip() or not row.get("company") or not row.get("role"):
+            continue
+        row["slug"] = slugify(f"{row['company'].strip()} {row['role'].strip()}")
+        pinned.append(row["slug"])
+    if pinned:
+        if "slug" not in fields:
+            fields.append("slug")
+        write_csv(path, rows, fields)
+    return pinned
+
+
 def pick_targets(targets: list[Target], slug: str | None) -> list[Target]:
     if not slug:
         return targets

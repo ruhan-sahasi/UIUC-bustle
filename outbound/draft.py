@@ -19,7 +19,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from common import Target
-from lint import Violation, expand_contractions, lint_email, lint_subject
+from lint import Violation, check_fixed_lines, expand_contractions, lint_email, lint_subject, prose_lines
 from profile_md import Profile
 from sequences import Sequence
 
@@ -42,18 +42,22 @@ class LLM:
             client = anthropic.Anthropic()
         self.client = client
         self.model = model
-        self.usage = {"input_tokens": 0, "output_tokens": 0, "web_search_requests": 0}
+        self.usage = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": 0, "web_search_requests": 0}
 
-    def create(self, **kwargs: Any) -> Any:
+    def create(self, *, stream: bool = False, **kwargs: Any) -> Any:
         kwargs.setdefault("model", self.model)
         kwargs.setdefault("max_tokens", 16000)
-        kwargs.setdefault("cache_control", {"type": "ephemeral"})
         kwargs["betas"] = [*kwargs.get("betas", []), FALLBACK_BETA]
         kwargs["fallbacks"] = "default"
-        response = self.client.beta.messages.create(**kwargs)
+        if stream:  # long research turns: streaming avoids HTTP timeouts on a large max_tokens
+            with self.client.beta.messages.stream(**kwargs) as s:
+                response = s.get_final_message()
+        else:
+            response = self.client.beta.messages.create(**kwargs)
         usage = getattr(response, "usage", None)
-        self.usage["input_tokens"] += int(getattr(usage, "input_tokens", 0) or 0)
-        self.usage["output_tokens"] += int(getattr(usage, "output_tokens", 0) or 0)
+        for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            self.usage[key] += int(getattr(usage, key, 0) or 0)
         server = getattr(usage, "server_tool_use", None)
         self.usage["web_search_requests"] += int(getattr(server, "web_search_requests", 0) or 0)
         if response.stop_reason == "refusal":
@@ -61,7 +65,9 @@ class LLM:
         return response
 
     def json(self, *, system: str, user: str, schema: dict, effort: str = "high") -> dict:
-        response = self.create(system=system, messages=[{"role": "user", "content": user}],
+        # Cache only the stable system prompt; the user message changes on every call.
+        response = self.create(system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                               messages=[{"role": "user", "content": user}],
                                output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}})
         if response.stop_reason == "max_tokens":
             raise LLMError("the reply hit max_tokens before the JSON was complete")
@@ -72,8 +78,10 @@ class LLM:
             raise LLMError(f"reply was not valid JSON: {text[:200]}") from exc
 
     def cost(self) -> float:
+        """Claude Opus 5.5: $4 / MTok input, $5 cache writes, $0.20 cache reads, $20 output, $0.01 per search."""
         u = self.usage
-        return u["input_tokens"] * 4 / 1e6 + u["output_tokens"] * 20 / 1e6 + u["web_search_requests"] * 0.01
+        return (u["input_tokens"] * 4 + u["cache_creation_input_tokens"] * 5 + u["cache_read_input_tokens"] * 0.2
+                + u["output_tokens"] * 20) / 1e6 + u["web_search_requests"] * 0.01
 
 
 # --------------------------------------------------------------------------- research
@@ -153,6 +161,7 @@ class Research:
     data: dict
     sources: list[dict]
     dropped: list[dict]
+    incomplete: str = ""  # why the research turn did not finish cleanly, if it did not
 
 
 def _collect(content: list, sources: dict[str, dict]) -> None:
@@ -206,7 +215,7 @@ def research(llm: LLM, target: Target, profile: Profile, *, today: date, max_rou
         today=today.isoformat(), company=target.company, domain=target.domain, role=target.role,
         location=target.location or "not stated",
         posting=target.posting_url or "not provided; find it on the company careers site if you can",
-        experiences=profile.experiences or "(none listed)", term=profile.term,
+        experiences=profile.experiences_for(target.track) or "(none listed)", term=profile.term,
         graduation=profile.graduation or "not stated",
     )
     tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 6},
@@ -214,13 +223,24 @@ def research(llm: LLM, target: Target, profile: Profile, *, today: date, max_rou
     messages: list[dict] = [{"role": "user", "content": prompt}]
     sources: dict[str, dict] = {}
     texts: list[str] = []
+    assistant_blocks: list = []
+    stop = ""
     for _ in range(max_rounds):
-        response = llm.create(system=RESEARCH_SYSTEM, messages=messages, tools=tools, output_config={"effort": "high"})
+        response = llm.create(stream=True, max_tokens=64000, system=RESEARCH_SYSTEM, messages=messages, tools=tools,
+                              output_config={"effort": "high"})
         _collect(response.content, sources)
         texts += [b.text for b in response.content if getattr(b, "type", None) == "text"]
-        if response.stop_reason != "pause_turn":
+        stop = response.stop_reason
+        if stop != "pause_turn":
             break
-        messages = [messages[0], {"role": "assistant", "content": response.content}]  # resume the paused turn
+        # A paused server-tool turn resumes from the whole turn so far, not just the last chunk.
+        assistant_blocks += list(response.content)
+        messages = [messages[0], {"role": "assistant", "content": assistant_blocks}]
+    incomplete = ""
+    if stop == "max_tokens":
+        incomplete = "the research reply was cut off (max_tokens)"
+    elif stop == "pause_turn":
+        incomplete = f"the research was still running after {max_rounds} rounds"
     brief = "".join(texts).strip()
     if not brief:
         raise LLMError(f"research for {target.slug} returned no text")
@@ -232,7 +252,7 @@ def research(llm: LLM, target: Target, profile: Profile, *, today: date, max_rou
     data["facts"] = kept
     data["eligibility_flags"] = [f for f in data.get("eligibility_flags", [])
                                  if f.strip() and not re.match(r"^\s*(none|n/?a|no red flags)\b", f, re.I)]
-    return Research(data=data, sources=list(sources.values()), dropped=dropped)
+    return Research(data=data, sources=list(sources.values()), dropped=dropped, incomplete=incomplete)
 
 
 # --------------------------------------------------------------------------- writing
@@ -249,9 +269,18 @@ WRITE_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Markers that block launch until the person has looked at the copy and deleted the line.
+BLOCKING_MARKERS = ("NO VERIFIED FACT", "RESEARCH INCOMPLETE")
 
-def system_prompt(profile: Profile) -> str:
+
+def system_prompt(profile: Profile, track: str, *, link_mode: bool, has_facts: bool) -> str:
     never = "\n".join(f"- {item}" for item in profile.never_mention) or "- (none)"
+    resume_sentence = ("do not mention attaching anything, because code adds a line with the resume link"
+                       if link_mode else 'say "I have attached my resume"')
+    fact_rule = ("Give the plain big idea first, then ONE specific recent fact from research.facts, explained simply. "
+                 "Do not quote the URL or the date." if has_facts else
+                 "There are no verified facts for this company, so state no specific claims about it at all: no "
+                 "launches, numbers, dates or news. Give only the plain big idea of why its work matters to you.")
     return f"""You write short emails from {profile.name}, a student, to recruiters about internships the student has \
 applied to or wants. Apollo sends the same copy to every recruiter at that company, so write to the company and the \
 role, never to one specific recipient. Each email goes out under the student's name, so it must sound like them and \
@@ -259,7 +288,7 @@ be completely true.
 
 # Facts you may use
 Only these. Never invent or embellish experiences, numbers, titles, tools, or outcomes.
-{profile.experiences}
+{profile.experiences_for(track)}
 
 Never mention or imply:
 {never}
@@ -268,10 +297,10 @@ Never mention or imply:
 Write 3 or 4 short paragraphs. Code adds "Hi {{first}}," before them and the sign-off after them.
 1. Start with exactly: "{profile.opening}" Then say you are writing about the role at the company, and if the input \
 says already_applied is true, say plainly that you applied.
-2. Start with "The reason I would love to join <company> is that". Give the plain big idea first, then ONE specific \
-recent fact from the research, explained simply. Do not quote the URL or the date.
-3. Start with "Specifically," and connect one or two experiences to what this team does.
-4. The ask, one or two sentences: {{resume_sentence}} and you would be grateful to be considered or pointed to the \
+2. Start with "The reason I would love to join <company> is that". {fact_rule} The research background fields are \
+unverified context: never state them as facts.
+3. Start with "Specifically," and connect one or two of the experiences above to what this team does.
+4. The ask, one or two sentences: {resume_sentence}, and you would be grateful to be considered or pointed to the \
 right person.
 
 # Email 2, a follow-up five days later in the same thread
@@ -282,56 +311,79 @@ it. Restate the role in a few words, make one small new point that is true, and 
 # Voice
 {profile.voice}
 
-# Hard rules. A checker rejects the copy if any is broken.
+# Hard rules. A checker rejects the copy if any is broken, in the subject too.
 - No apostrophes, straight or curly: write "I am", "do not", and reword possessives ("the team at X").
 - No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.
 - No links. Never write a greeting, sign-off, or signature yourself.
-- No graduation date or class year.
-- Email 1: at most 3 numbers ("{profile.term}" does not count), 90 to 170 words across its paragraphs, names the company.
-- Subject: plain and specific, under 70 characters, no apostrophes, no "Re:". For example: "{profile.subject_example}".
-- Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, innovative, delve, thrilled, \
-synergy, "not just", "I hope this email finds you well".
+- No graduation date, graduation year, or class year.
+- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 90 to 170 words and names the company.
+- Subject: plain and specific, under 70 characters, at most one number, no "Re:". For example: "{profile.subject_example}".
+- Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, delve, thrilled, synergy, \
+testament, tapestry, game-changer, or any form of them; and never "not just" or "I hope this email finds you well".
 
 # Output
-JSON: subject, email1_paragraphs, email2_paragraphs, fact_url_used (the source_url of the research fact you used)."""
+JSON: subject, email1_paragraphs, email2_paragraphs, fact_url_used (the source_url of the research fact you used, \
+or an empty string if there were none)."""
 
 
 def assemble(profile: Profile, track: str, email1: list[str], email2: list[str]) -> tuple[str, str]:
     p1 = [p.strip() for p in email1 if p.strip()]
-    resume = profile.resume(track)
     if profile.resume_is_link(track):
-        p1.append(f"My resume: {resume}")
-    body1 = "\n\n".join(["Hi {first},", *p1, profile.closing_line, profile.sign_off + "\n" + "\n".join(profile.signature_lines)])
+        p1.append(f"My resume: {profile.resume(track)}")
+    body1 = "\n\n".join(["Hi {first},", *p1, profile.closing_line,
+                         profile.sign_off + "\n" + "\n".join(profile.signature_lines)])
     body2 = "\n\n".join(["Hi {first},", *[p.strip() for p in email2 if p.strip()], "Thank you,\n" + profile.first_name])
     return body1, body2
 
 
+ATTACH_WORDING = re.compile(r"\battach(ed|ing|ment)?\b", re.I)
+
+
 def lint_sequence(seq: Sequence, *, profile: Profile, target: Target) -> list[Violation]:
+    """Style rules plus the resume rules for the CURRENT profile, so copy drafted for one resume mode
+    can never launch under the other."""
     fixed = profile.fixed_lines()
+    link_mode = profile.resume_is_link(target.track)
     resume = profile.resume(target.track)
-    links = [resume] if profile.resume_is_link(target.track) else []
-    v = lint_subject(seq.subject, target.company)
+    links = [resume] if link_mode else []
+    common = dict(banned_topics=profile.banned_topics, extra_banned_words=profile.extra_banned_words,
+                  graduation=profile.graduation_years)
+    v = lint_subject(seq.subject, company=target.company, **common)
     for i, body in enumerate(seq.emails, start=1):
         v += lint_email(body, where=f"email {i}", first_touch=(i == 1), company=target.company,
-                        opening=profile.opening if i == 1 else "", fixed_lines=fixed,
-                        banned_topics=profile.banned_topics, extra_banned_words=profile.extra_banned_words,
-                        allowed_links=links)
+                        opening=profile.opening if i == 1 else "", fixed_lines=fixed, allowed_links=links, **common)
+    first = seq.emails[0] if seq.emails else ""
+    if link_mode:
+        if f"My resume: {resume}" not in first:
+            v.append(Violation("email 1", "resume", f'profile.md uses a resume link: email 1 needs the line '
+                                                    f'"My resume: {resume}" (run draft --redo, or add it)'))
+        if ATTACH_WORDING.search(first):
+            v.append(Violation("email 1", "resume", "says the resume is attached, but profile.md uses a link"))
+    elif "my resume:" in first.lower() or re.search(r"https?://", "\n".join(prose_lines(first, fixed))):
+        v.append(Violation("email 1", "resume", "has a resume link, but profile.md is in attach mode"))
+    v += check_fixed_lines(fixed, banned_topics=profile.banned_topics,
+                           graduation=profile.graduation_years)
+    for marker in BLOCKING_MARKERS:
+        if marker in seq.preamble:
+            v.append(Violation("header", "review", f'remove the "{marker}" line once you have checked the copy'))
     return v
 
 
 def write(llm: LLM, target: Target, profile: Profile, found: Research, *, max_rounds: int = 3,
           log: Callable[[str], None] = print) -> tuple[Sequence, list[Violation]]:
     link_mode = profile.resume_is_link(target.track)
-    resume_sentence = ("the resume link follows on its own line, so do not mention attaching anything"
-                       if link_mode else 'say "I have attached my resume"')
-    system = system_prompt(profile).replace("{resume_sentence}", resume_sentence)
+    facts = found.data.get("facts", [])
+    system = system_prompt(profile, target.track, link_mode=link_mode, has_facts=bool(facts))
     payload = {
-        "company": target.company, "role": target.role, "term": profile.term, "already_applied": target.applied,
-        "location": target.location, "notes_from_student": target.notes,
-        "research": {k: found.data.get(k) for k in ("company_summary", "team_focus", "facts", "posting_keywords")},
+        "company": target.company, "role": target.role, "track": target.track, "term": profile.term,
+        "already_applied": target.applied, "location": target.location, "notes_from_student": target.notes,
+        "research": {
+            "facts": facts,
+            "background_unverified": {k: found.data.get(k) for k in ("company_summary", "team_focus", "posting_keywords")},
+        },
     }
     user = "Write the copy for this role.\n\n" + json.dumps(payload, indent=2)
-    allowed = {normalize_url(f["source_url"]) for f in found.data.get("facts", [])}
+    allowed = {normalize_url(f["source_url"]) for f in facts}
     feedback, seq, problems = "", None, []
     for attempt in range(1, max_rounds + 1):
         out = llm.json(system=system, user=user + feedback, schema=WRITE_SCHEMA, effort="high")
@@ -342,7 +394,7 @@ def write(llm: LLM, target: Target, profile: Profile, found: Research, *, max_ro
         seq = Sequence(subject=subject, emails=[body1, body2], days=[0, FOLLOWUP_DAY])
         problems = lint_sequence(seq, profile=profile, target=target)
         if allowed and normalize_url(out.get("fact_url_used", "")) not in allowed:
-            problems.append(Violation("email 1", "facts", "use one fact from the research, by its source_url"))
+            problems.append(Violation("email 1", "facts", "use one fact from research.facts, by its source_url"))
         if not problems:
             break
         log(f"[draft] {target.slug}: round {attempt} had {len(problems)} style issue(s), rewriting")
@@ -354,13 +406,27 @@ def write(llm: LLM, target: Target, profile: Profile, found: Research, *, max_ro
     return seq, problems
 
 
+def header_lines(target: Target, found: Research, problems: list[Violation]) -> list[str]:
+    lines = [f"Target: {target.company}, {target.role} ({target.slug})",
+             "Edit anything below. `lint` checks it; `launch` pushes it to Apollo. Only the subject and emails are sent."]
+    if not found.data.get("facts"):
+        lines.append("NO VERIFIED FACT: research found nothing it could verify, so paragraph 2 has no specifics. "
+                     "Read it, add a fact you checked yourself if you like, then delete this line.")
+    if found.incomplete:
+        lines.append(f"RESEARCH INCOMPLETE: {found.incomplete}, so eligibility was not fully checked. Check the "
+                     "posting yourself, then delete this line.")
+    if problems:
+        lines.append("STYLE ISSUES LEFT (lint shows them): " + "; ".join(str(p) for p in problems))
+    return lines
+
+
 def research_notes(found: Research) -> str:
     lines = ["Research notes (never sent)", "", found.data.get("company_summary", ""), "",
              found.data.get("team_focus", ""), "", "Verified facts:"]
     for f in found.data.get("facts", []):
         lines.append(f"- {f['fact']} ({f['published']}, [{f.get('source_title') or 'source'}]({f['source_url']}))")
     if not found.data.get("facts"):
-        lines.append("- none survived verification; write the company paragraph yourself")
+        lines.append("- none survived verification")
     if found.dropped:
         lines += ["", "Dropped by verification:"]
         lines += [f"- {d.get('fact')} ({d.get('reason')})" for d in found.dropped]

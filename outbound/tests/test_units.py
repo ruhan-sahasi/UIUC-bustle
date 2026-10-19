@@ -67,8 +67,10 @@ def test_render_parse_round_trip():
 def test_parse_errors():
     with pytest.raises(ValueError, match="Subject line"):
         parse_md("## Email 1 (day 0)\n> hi")
+    with pytest.raises(ValueError, match="starts with '>'"):
+        parse_md("## Subject line\nS\n## Email 1 (day 0)\n> Hi\nnot quoted")
     with pytest.raises(ValueError, match="no body"):
-        parse_md("## Subject line\nS\n## Email 1 (day 0)\nnot quoted")
+        parse_md("## Subject line\nS\n## Email 1 (day 0)\n\n")
     with pytest.raises(ValueError, match="numbered"):
         parse_md("## Subject line\nS\n## Email 2 (day 0)\n> hi")
 
