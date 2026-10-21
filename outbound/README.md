@@ -2,7 +2,7 @@
 
 Goal: for every role you applied to, a short and specific email to the right recruiters, sent by Apollo
 from your own mailbox, with one follow-up five days later in the same thread, stopping the moment they
-reply. Built on the same design as the vestige outbound pipeline (`vsahasi/vestige/outbound`): Apollo
+reply (or no follow-up, with `Follow-up: no` in profile.md, if you would rather follow up by hand). Built on the same design as the vestige outbound pipeline (`vsahasi/vestige/outbound`): Apollo
 search is free, each email reveal costs one credit and is capped, the copy lives in markdown files,
 and Apollo sequences do the sending, so nothing depends on SMTP from your laptop.
 
@@ -101,7 +101,7 @@ id, so re-running never pays for the same person twice, and `--max` caps credits
 | `profile.md` | your settings, signature, the only facts the writer may use, never-mention list, voice | no |
 | `contacts.csv` | every revealed person, resumable | no |
 | `batch-<target>.csv` | the enroll-ready cut | no |
-| `sequences/<target>.md` | the copy: subject, Email 1 (day 0), Email 2 (day 5), research notes (never sent) | no |
+| `sequences/<target>.md` | the copy: subject, Email 1 (day 0), Email 2 (day 5) unless `Follow-up: no`, research notes (never sent) | no |
 | `campaigns.csv` | Apollo sequence id per target, plus a hash of the copy last pushed | no |
 | `enrolled.csv` | who was enrolled where and when, anyone Apollo skipped and why, and `enroll_unknown` rows when Apollo failed mid-request (check those in Apollo; they are never offered again) | no |
 | `.env` | keys and the chosen mailbox | no |

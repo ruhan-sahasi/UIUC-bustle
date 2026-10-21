@@ -63,6 +63,11 @@ class Profile:
         return self.settings.get("Sign-off", "Warm Regards,")
 
     @property
+    def follow_up(self) -> bool:
+        """`Follow-up: no` drafts only the first email, for following up by hand."""
+        return self.settings.get("Follow-up", "yes").strip().lower() not in ("no", "n", "false", "off", "0")
+
+    @property
     def signature_lines(self) -> list[str]:
         lines = [line.rstrip() for line in self.sections.get("Signature", "").strip().splitlines() if line.strip()]
         return lines or [self.name]

@@ -118,3 +118,26 @@ def test_check_and_mailboxes_save(cli, workdir, capsys, monkeypatch):
     assert run("mailboxes", "--save", "mb1") == 0
     assert "APOLLO_MAILBOX_ID=mb1" in (workdir / ".env").read_text()
     assert run("mailboxes", "--save", "bogus") == 1
+
+
+def test_follow_up_off_drafts_and_pushes_one_email(cli, workdir):
+    profile = workdir / "profile.md"
+    profile.write_text(profile.read_text().replace("Follow-up: yes", "Follow-up: no"))
+    assert run("run") == 0
+    text = (workdir / "sequences" / f"{slug()}.md").read_text()
+    assert "## Email 1" in text and "## Email 2" not in text
+    assert run("create", "--target", slug()) == 0
+    campaign = next(iter(cli.campaigns.values()))
+    assert len(cli.steps[campaign["id"]]) == 1
+
+
+def test_deleting_email_2_from_the_copy_removes_the_step_in_apollo(cli, workdir):
+    assert run("run") == 0
+    assert run("create", "--target", slug()) == 0
+    campaign = next(iter(cli.campaigns.values()))
+    assert len(cli.steps[campaign["id"]]) == 2
+    path = workdir / "sequences" / f"{slug()}.md"
+    text = path.read_text()
+    path.write_text(text[:text.index("## Email 2")] + text[text.index("## Research notes"):])
+    assert run("create", "--target", slug()) == 0
+    assert len(cli.steps[campaign["id"]]) == 1

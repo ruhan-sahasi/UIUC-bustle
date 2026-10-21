@@ -3,9 +3,9 @@
 1. Research. Claude Opus 5.5 searches the web and reads the job posting, then a second call turns
    its brief into JSON. A fact survives only if its URL was actually retrieved during research and
    it was published in the last year: an invented fact in a cold email is the worst failure.
-2. Write. Claude writes the subject and two emails (the first touch and one in-thread follow-up)
-   from profile.md and the verified research. The greeting, sign-off and signature are added by
-   code. The style check runs on the result and failures go back to Claude, up to three rounds.
+2. Write. Claude writes the subject and two emails (the first touch and one in-thread follow-up, or
+   only the first touch when profile.md says `Follow-up: no`) from profile.md and the verified
+   research. The greeting, sign-off and signature are added by code. The style check runs on the result and failures go back to Claude, up to three rounds.
 3. Save. The copy lands in sequences/<target>.md with the research notes underneath (never sent),
    for you to read and edit before `launch`.
 """
@@ -298,6 +298,14 @@ def system_prompt(profile: Profile, track: str, *, link_mode: bool, has_facts: b
                  "There are no verified facts for this company, so state no specific claims about it at all: no "
                  "launches, numbers, dates or news. Say in one plain sentence what the team works on that connects "
                  "to the experience in paragraph 3.")
+    follow_up = ("""# Email 2, a follow-up five days later in the same thread
+One or two sentences, 20 to 50 words. Code adds "Hi {first}," before it and "Thank you," and the first name after \
+it. Say you are following up on your note about the role at the company, and ask them to point you to the right \
+person if they are not. Nothing else: no new project, no tech stack. No guilt, no "just bumping", no "circling back".
+
+""" if profile.follow_up else "")
+    email2_output = ("email2_paragraphs" if profile.follow_up else
+                     "email2_paragraphs (always an empty list: the student follows up by hand)")
     return f"""You write short emails from {profile.name}, a student, to recruiters about internships the student has \
 applied to or wants. Apollo sends the same copy to every recruiter at that company, so write to the company and the \
 role, never to one specific recipient. Each email goes out under the student's name, so it must sound like them and \
@@ -330,12 +338,7 @@ Do not open paragraphs with "The reason I would love to join", "Specifically," o
 letter habits and read as a template in an email. Do not explain the company back to itself or add a takeaway line \
 after the fact.
 
-# Email 2, a follow-up five days later in the same thread
-One or two sentences, 20 to 50 words. Code adds "Hi {{first}}," before it and "Thank you," and the first name after \
-it. Say you are following up on your note about the role at the company, and ask them to point you to the right \
-person if they are not. Nothing else: no new project, no tech stack. No guilt, no "just bumping", no "circling back".
-
-# Voice
+{follow_up}# Voice
 {profile.voice}
 
 # Hard rules. A checker rejects the copy if any is broken, in the subject too.
@@ -350,7 +353,7 @@ characters. No number, no "Re:".
 testament, tapestry, game-changer, or any form of them; and never "not just" or "I hope this email finds you well".
 
 # Output
-JSON: subject, email1_paragraphs, email2_paragraphs, fact_url_used (the source_url of the research fact you used, \
+JSON: subject, email1_paragraphs, {email2_output}, fact_url_used (the source_url of the research fact you used, \
 or an empty string if there were none)."""
 
 
@@ -419,7 +422,10 @@ def write(llm: LLM, target: Target, profile: Profile, found: Research, *, max_ro
         e1 = [expand_contractions(p) for p in out["email1_paragraphs"]]
         e2 = [expand_contractions(p) for p in out["email2_paragraphs"]]
         body1, body2 = assemble(profile, target.track, e1, e2)
-        seq = Sequence(subject=subject, emails=[body1, body2], days=[0, FOLLOWUP_DAY])
+        if profile.follow_up:
+            seq = Sequence(subject=subject, emails=[body1, body2], days=[0, FOLLOWUP_DAY])
+        else:
+            seq = Sequence(subject=subject, emails=[body1], days=[0])
         problems = lint_sequence(seq, profile=profile, target=target)
         if allowed and normalize_url(out.get("fact_url_used", "")) not in allowed:
             problems.append(Violation("email 1", "facts", "use one fact from research.facts, by its source_url"))

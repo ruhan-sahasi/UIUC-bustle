@@ -10,6 +10,7 @@ Resume: attach
 Resume file swe: ~/Desktop/Jordan_Lee_Resume_swe.pdf
 Closing: Thank you for reading and I look forward to hearing back!
 Sign-off: Warm Regards,
+Follow-up: yes
 
 How the settings above are used:
 - Opening is the exact first sentence of every first email.
@@ -18,6 +19,8 @@ How the settings above are used:
   for attachments). Or put a link here (https://...) and it is added to email 1 automatically.
   `Resume pm:` / `Resume consulting:` override it per track, and `Resume file <track>:` is the PDF
   the launch instructions tell you to attach.
+- Follow-up: `yes` adds a short reply in the same thread five days later, which Apollo skips for
+  anyone who replied. `no` sends only the first email, for following up by hand.
 
 ## Signature
 Jordan Lee
