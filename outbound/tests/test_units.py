@@ -87,6 +87,8 @@ def test_lint_rules():
     assert "merge_field" in rules(base.replace("{first}", "{first_name}"))
     assert "merge_field" in rules(base.replace("Hi {first},", "Hi {{first_name}},"))
     assert "greeting" in rules(base.replace("Hi {first},", "Hello there,"))
+    assert "opening" not in rules(base.replace("Hi {first},\n\n", "Hi {first},\n\nTL;DR: I applied to the role.\n\n"))
+    assert "opening" in rules(base.replace("My name is Jordan and I am", "I am"))
     assert "links" in rules(base.replace("I have attached my resume", "See https://x.com/cv"))
     assert "banned_word" in rules(base.replace("built", "leveraged"))
     assert "graduation" in rules(base.replace("I recently applied", "I graduate in May 2028 and recently applied"))

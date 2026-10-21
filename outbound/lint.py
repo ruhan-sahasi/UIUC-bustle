@@ -193,8 +193,8 @@ def lint_email(body: str, *, where: str, first_touch: bool, company: str, openin
     if n_numbers > 3:
         v.append(Violation(where, "numbers", f"{n_numbers} numbers; use at most 3"))
     if first_touch:
-        if opening and not " ".join(prose.split()).startswith(" ".join(opening.split())):
-            v.append(Violation(where, "opening", f'start with exactly: "{opening}"'))
+        if opening and " ".join(opening.split()) not in " ".join(prose.split()):  # a TL;DR line may come first
+            v.append(Violation(where, "opening", f'include exactly: "{opening}"'))
         if company and company.lower() not in prose.lower():
             v.append(Violation(where, "company", f"name {company} at least once"))
         if not 90 <= n_words <= 230:
