@@ -223,3 +223,14 @@ def test_resume_link_mode_adds_the_link(workdir):
     assert "My resume: https://drive.example/cv" in body1
     assert lint_sequence(Sequence("Penn CS student, SWE intern role", [body1, body2], [0, 5]),
                          profile=profile, target=target) == []
+
+
+def test_off_domain_emails_are_explained_and_alt_domains_recover_them(server, workdir):
+    server.reveal["p3"]["email"] = "ana.gomez@acmewireless.com"
+    target = load_targets()[0]
+    lines = []
+    report = hunt(server.client(), [target], per_company=2, max_reveals=3, sleep=lambda s: None, log=lines.append)
+    assert any("acmewireless.com is not in this target's domains" in line for line in lines)
+    assert any("alt_domains" in n and "acmewireless.com" in n for n in report.notes)
+    target.alt_domains = ["acmewireless.com"]
+    assert cut([target]) == {target.slug: 2}

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from apollo_api import Apollo, ApolloStop
-from common import Target, data_dir, on_domain, read_csv, split_name, write_csv
+from common import Target, data_dir, email_domain, on_domain, read_csv, split_name, write_csv
 
 # Who to look for, in the order Apollo search is asked. Ranking below decides who gets revealed.
 RECRUITER_TITLES = [
@@ -99,6 +99,14 @@ def usable(row: dict, target: Target) -> bool:
             and on_domain(row.get("email", ""), target.domains))
 
 
+def why_unusable(row: dict, target: Target) -> str:
+    if row.get("status") != "found" or not row.get("email"):
+        return "no email"
+    if row.get("email_status") != "verified":
+        return f"email is {row.get('email_status') or 'unverified'}"
+    return f"{email_domain(row['email'])} is not in this target's domains"
+
+
 @dataclass
 class HuntReport:
     revealed: int = 0
@@ -130,6 +138,7 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
     errors = 0
     try:
         for target in targets:
+            off_domain: set[str] = set()
             have = sum(1 for r in rows if r.get("target") == target.slug and usable(r, target))
             if have >= per_company:
                 report.found[target.slug] = have
@@ -176,9 +185,15 @@ def hunt(apollo: Apollo, targets: list[Target], *, per_company: int = 2, max_rev
                 good = usable(row, target)
                 have += good
                 log(f"[hunt] {target.slug}: {row['name']} | {row['title']} | {row['email'] or 'no email'} "
-                    f"({row['email_status'] or '-'}){'' if good else '  (not usable)'}")
+                    f"({row['email_status'] or '-'}){'' if good else '  (not usable: ' + why_unusable(row, target) + ')'}")
+                if row["email"] and not on_domain(row["email"], target.domains):
+                    off_domain.add(email_domain(row["email"]))
                 sleep(pause)
             report.found[target.slug] = have
+            if off_domain:
+                report.notes.append(
+                    f"{target.slug}: skipped verified emails at {', '.join(sorted(off_domain))}. If that is the same "
+                    f"company, add it to alt_domains in targets.csv and run cut again (no new credits needed)")
             if have == 0:
                 report.notes.append(f"{target.slug}: no verified recruiter email yet (check the domain in targets.csv)")
             if report.revealed >= max_reveals:
