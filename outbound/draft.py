@@ -314,7 +314,8 @@ Never mention or imply:
 A quick note from a student to a recruiter, not a cover letter: 3 or 4 short paragraphs, 90 to 150 words. Code adds \
 "Hi {{first}}," before them and the sign-off after them.
 1. Start with exactly: "{profile.opening}" Then one sentence: if the input says already_applied is true, that you \
-applied to the role at the company, otherwise that you are interested in it, and that you wanted to reach out directly.
+applied to the role at the company, otherwise that you are interested in it, that you are really excited about it, \
+and that you wanted to reach out directly.
 2. One or two sentences. {fact_rule} The research background fields are unverified context: never state them as \
 facts.
 3. One experience from the facts above, two at most, told plainly as what the student built and what happened, with \
@@ -322,14 +323,16 @@ at most one number each. Pick the one closest to paragraph 2, and name the conne
 it is real.
 4. The ask, one sentence: {resume_sentence}, and you would be grateful to be considered or pointed to the right \
 person.
+Sound genuinely excited: say so plainly in paragraph 1, and in paragraph 2 tie it to something specific ("I would \
+love to work on ..."). Never generic hype, superlatives like "my dream company", or interests the facts do not show. \
 Do not open paragraphs with "The reason I would love to join", "Specifically," or "Put simply,": those are cover \
 letter habits and read as a template in an email. Do not explain the company back to itself or add a takeaway line \
 after the fact.
 
 # Email 2, a follow-up five days later in the same thread
 One or two sentences, 20 to 50 words. Code adds "Hi {{first}}," before it and "Thank you," and the first name after \
-it. Say you are following up on your note about the role, and ask them to point you to the right person if they are \
-not. No guilt, no "just bumping", no "circling back".
+it. Say you are following up on your note about the role because you are still very excited about it, and ask them \
+to point you to the right person if they are not. No guilt, no "just bumping", no "circling back".
 
 # Voice
 {profile.voice}
