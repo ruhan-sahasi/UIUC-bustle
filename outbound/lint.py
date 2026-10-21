@@ -197,8 +197,8 @@ def lint_email(body: str, *, where: str, first_touch: bool, company: str, openin
             v.append(Violation(where, "opening", f'start with exactly: "{opening}"'))
         if company and company.lower() not in prose.lower():
             v.append(Violation(where, "company", f"name {company} at least once"))
-        if not 90 <= n_words <= 190:
-            v.append(Violation(where, "length", f"{n_words} words; aim for 90 to 190"))
+        if not 90 <= n_words <= 230:
+            v.append(Violation(where, "length", f"{n_words} words; aim for 90 to 230"))
     elif not 20 <= n_words <= 90:
         v.append(Violation(where, "length", f"{n_words} words; a follow-up is 20 to 90"))
     return v

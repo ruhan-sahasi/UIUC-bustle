@@ -311,16 +311,16 @@ Never mention or imply:
 {never}
 
 # Email 1, the first touch
-A quick note from a student to a recruiter, not a cover letter: 3 or 4 short paragraphs, 90 to 150 words. Code adds \
+A note from a student to a recruiter, not a cover letter: 4 short paragraphs, 120 to 200 words. Code adds \
 "Hi {{first}}," before them and the sign-off after them.
 1. Start with exactly: "{profile.opening}" Then one sentence: if the input says already_applied is true, that you \
 applied to the role at the company, otherwise that you are interested in it, and that you wanted to reach out \
 directly because you think the opportunity is really interesting.
 2. One or two sentences. {fact_rule} The research background fields are unverified context: never state them as \
 facts.
-3. One experience from the facts above, two at most, told plainly as what the student built and what happened, with \
-at most one number each. Pick the one closest to paragraph 2, and name the connection in a few plain words only if \
-it is real.
+3. Two experiences from the facts above, with detail: what the student built, the main tools, and what it did or led \
+to, at most one number each, using the approved wording where the facts give it. Put the one closest to paragraph 2 \
+first, and name the connection in a few plain words only if it is real.
 4. The ask, one sentence: {resume_sentence}, and you would be grateful to be considered or pointed to the right \
 person.
 Sound genuinely interested, never over the top: say it once in paragraph 1 as above, and in paragraph 2 tie it to \
@@ -343,7 +343,7 @@ person if they are not. Nothing else: no new project, no tech stack. No guilt, n
 - No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.
 - No links. Never write a greeting, sign-off, or signature yourself.
 - No graduation date, graduation year, or class year.
-- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 90 to 150 words and names the company.
+- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 120 to 200 words and names the company.
 - Subject: exactly "Interested in the <role> role at <company>", shortening the role name if needed to stay under 70 \
 characters. No number, no "Re:".
 - Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, delve, thrilled, synergy, \
