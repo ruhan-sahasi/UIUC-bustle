@@ -236,3 +236,15 @@ def test_off_domain_emails_are_explained_and_alt_domains_recover_them(server, wo
     assert any("alt_domains" in n and "acmewireless.com" in n for n in report.notes)
     target.alt_domains = ["acmewireless.com"]
     assert cut([target]) == {target.slug: 2}
+
+
+def test_example_email_shapes_the_prompt_only_when_present():
+    from pathlib import Path
+
+    from draft import system_prompt
+    from profile_md import load_profile
+    p = load_profile(Path(__file__).parent.parent / "profile.example.md")
+    assert "help desk AI" in p.example_email
+    assert "The shape to match" in system_prompt(p, "swe", link_mode=False, has_facts=True)
+    p.sections.pop("Example email")
+    assert "The shape to match" not in system_prompt(p, "swe", link_mode=False, has_facts=True)

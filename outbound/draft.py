@@ -292,18 +292,21 @@ def system_prompt(profile: Profile, track: str, *, link_mode: bool, has_facts: b
     never = "\n".join(f"- {item}" for item in profile.never_mention) or "- (none)"
     resume_sentence = ("do not mention attaching anything, because code adds a line with the resume link"
                        if link_mode else 'say "I have attached my resume"')
-    fact_rule = ("Mention ONE specific recent fact from research.facts the way a person mentions something they "
-                 'read ("I saw that ...", "I read the ... post about ..."), in plain words. Never quote the URL, and '
-                 "never say when the student read it." if has_facts else
-                 "There are no verified facts for this company, so state no specific claims about it at all: no "
-                 "launches, numbers, dates or news. Say in one plain sentence what the team works on that connects "
-                 "to the experience in paragraph 3.")
+    fact_rule = ("one sentence with ONE specific recent fact from research.facts, mentioned the way a person "
+                 'mentions something they read ("I read recently that ..."), joined to a plain line on why it '
+                 'appeals, such as "and that is the kind of work I want to do next summer". Never quote the URL.'
+                 if has_facts else
+                 "one plain sentence on the kind of work at the company the student wants to do. There are no "
+                 "verified facts for this company, so make no specific claims about it: no launches, numbers, "
+                 "dates or news.")
     follow_up = ("""# Email 2, a follow-up five days later in the same thread
 One or two sentences, 20 to 50 words. Code adds "Hi {first}," before it and "Thank you," and the first name after \
 it. Say you are following up on your note about the role at the company, and ask them to point you to the right \
 person if they are not. Nothing else: no new project, no tech stack. No guilt, no "just bumping", no "circling back".
 
 """ if profile.follow_up else "")
+    example = (f"The shape to match, written for a different company. Never reuse its company facts:\n"
+               f"{profile.example_email}\n\n" if profile.example_email else "")
     email2_output = ("email2_paragraphs" if profile.follow_up else
                      "email2_paragraphs (always an empty list: the student follows up by hand)")
     return f"""You write short emails from {profile.name}, a student, to recruiters about internships the student has \
@@ -319,26 +322,23 @@ Never mention or imply:
 {never}
 
 # Email 1, the first touch
-A note from a student to a recruiter, not a cover letter: 4 short paragraphs, 120 to 200 words. Code adds \
-"Hi {{first}}," before them and the sign-off after them.
-1. Start with exactly: "{profile.opening}" Then one sentence: if the input says already_applied is true, that you \
-applied to the role at the company, otherwise that you are interested in it, and that you wanted to reach out \
-directly because you think the opportunity is really interesting.
-2. One or two sentences. {fact_rule} The research background fields are unverified context: never state them as \
-facts.
-3. Two experiences from the facts above, with detail: what the student built, the main tools, and what it did or led \
-to, at most one number each, using the approved wording where the facts give it. Put the one closest to paragraph 2 \
-first, and name the connection in a few plain words only if it is real.
+Punchy and to the point, 4 short paragraphs, 130 to 190 words. Code adds "Hi {{first}}," before them and the \
+sign-off after them.
+1. One sentence starting "TL;DR: ", at most 35 words: "I applied to your <term> <role> role" (if already_applied is \
+false, "I am interested in" instead), then the one thing the student has built that matches what this team works on, \
+named in the team's own terms. No numbers, no praise, no claim about being a great fit.
+2. Exactly: "{profile.opening}" Then, in the same paragraph, {fact_rule} The research background fields are \
+unverified context: never state them as facts.
+3. The proof: the two experiences from the facts above that fit this team best, the closest one first. For each, one \
+or two short sentences: where, with its descriptor ("an a16z-backed startup"), what the student built and how it works \
+in plain verbs, and one result. Prefer lines marked "Preferred wording". Write percent as a word.
 4. The ask, one sentence: {resume_sentence}, and you would be grateful to be considered or pointed to the right \
 person.
-Sound genuinely interested, never over the top: say it once in paragraph 1 as above, and in paragraph 2 tie it to \
-something specific ("I would love to work on ..."). Never "I am really excited", generic hype, superlatives like "my \
-dream company", or interests the facts do not show. \
-Do not open paragraphs with "The reason I would love to join", "Specifically," or "Put simply,": those are cover \
-letter habits and read as a template in an email. Do not explain the company back to itself or add a takeaway line \
-after the fact.
+Every sentence earns its place. Never "I am really excited", generic hype, superlatives like "my dream company", or \
+interests the facts do not show. Do not open paragraphs with "The reason I would love to join", "Specifically," or \
+"Put simply,", do not explain the company back to itself, and do not add a takeaway line after the fact.
 
-{follow_up}# Voice
+{example}{follow_up}# Voice
 {profile.voice}
 
 # Hard rules. A checker rejects the copy if any is broken, in the subject too.
@@ -346,7 +346,7 @@ after the fact.
 - No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.
 - No links. Never write a greeting, sign-off, or signature yourself.
 - No graduation date, graduation year, or class year.
-- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 120 to 200 words and names the company.
+- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 130 to 190 words and names the company.
 - Subject: exactly "Interested in the <role> role at <company>", shortening the role name if needed to stay under 70 \
 characters. No number, no "Re:".
 - Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, delve, thrilled, synergy, \

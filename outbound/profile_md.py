@@ -63,6 +63,11 @@ class Profile:
         return self.settings.get("Sign-off", "Warm Regards,")
 
     @property
+    def example_email(self) -> str:
+        """The `## Example email` section: four paragraphs whose shape every first email should match."""
+        return self.sections.get("Example email", "").strip()
+
+    @property
     def follow_up(self) -> bool:
         """`Follow-up: no` drafts only the first email, for following up by hand."""
         return self.settings.get("Follow-up", "yes").strip().lower() not in ("no", "n", "false", "off", "0")

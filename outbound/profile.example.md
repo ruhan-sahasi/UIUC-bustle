@@ -19,6 +19,8 @@ How the settings above are used:
   for attachments). Or put a link here (https://...) and it is added to email 1 automatically.
   `Resume pm:` / `Resume consulting:` override it per track, and `Resume file <track>:` is the PDF
   the launch instructions tell you to attach.
+- `## Example email` below is the shape every first email matches: a TL;DR line, the opening plus one fact
+  about the company, the proof, the ask. Only its shape is reused, never its company facts.
 - Follow-up: `yes` adds a short reply in the same thread five days later, which Apollo skips for
   anyone who replied. `no` sends only the first email, for following up by hand.
 
@@ -45,3 +47,16 @@ Approved wording: "At Example Startup, I built a weekly Python pipeline that tur
 ## Voice
 Warm, plain, curious first person. Concrete details over adjectives. No formula openers, no zingers,
 no fake feelings.
+
+## Example email
+TL;DR: I applied to your Summer 2027 Software Engineering Intern role, and I have built a pipeline that turns piles of
+support tickets into fixes a team ships, the same problem behind your new help desk AI.
+
+My name is Jordan and I am a student studying Computer Science at Example University. I read recently that Example
+Corp added AI that groups incoming support tickets by the bug behind them, and that is the kind of work I want to do
+next summer.
+
+At Example Startup, I built a weekly Python pipeline that read 1,000 support tickets a week and grouped them into
+product fixes, and the team shipped 40 percent of its suggestions.
+
+I have attached my resume and would be grateful to be considered or pointed to the right person.
