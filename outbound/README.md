@@ -74,7 +74,7 @@ fields, or email structure.
 | `run [--max 10] [--per-company 2]` | hunt, cut, draft for every enabled target | credits + Claude |
 | `hunt [--target T] [--max 10]` | search recruiters, reveal the best until 2 verified emails per target | 1 credit per reveal |
 | `cut [--target T]` | write `batch-T.csv`: verified, on the company domain, never enrolled | free |
-| `draft [--target T] [--redo]` | research the role with Claude, write `sequences/T.md` | about $0.20 to $0.50 |
+| `draft [--target T] [--redo] [--deep]` | research the role with Claude, write `sequences/T.md` | about $0.75 per company; `--deep` about $1.50 |
 | `lint [--target T]` | check the copy against the style rules | free |
 | `launch --target T` | push the copy, activate, enroll after your typed yes | Apollo sends |
 | `create --target T [--activate]` | push the copy only, e.g. after editing (re-check the resume attachment after) | free |

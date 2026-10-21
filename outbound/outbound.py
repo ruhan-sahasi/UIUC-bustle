@@ -260,7 +260,8 @@ def cmd_draft(args) -> int:
             continue
         try:
             print(f"[draft] {target.slug}: researching {target.company}...")
-            found = draft.research(llm, target, profile, today=date.today())
+            found = draft.research(llm, target, profile, today=date.today(),
+                                   depth="deep" if getattr(args, "deep", False) else "light")
             print(f"[draft] {target.slug}: {len(found.data['facts'])} verified fact(s), {len(found.dropped)} dropped; "
                   "writing...")
             seq, problems = draft.write(llm, target, profile, found)
@@ -512,10 +513,13 @@ def build_parser() -> argparse.ArgumentParser:
                              ("run", cmd_run, "hunt, cut and draft for every enabled target")):
         sp = add(name, func, text, target=True)
         sp.add_argument("--per-company", type=int, default=2, help="recruiters per target (default 2)")
+        if name == "run":
+            sp.add_argument("--deep", action="store_true", help="twice the research (and about twice the cost)")
         if name != "cut":
             sp.add_argument("--max", type=int, default=10, help="max reveals this run, 1 credit each (default 10)")
     d = add("draft", cmd_draft, "research with Claude and write sequences/<target>.md", target=True)
     d.add_argument("--redo", action="store_true")
+    d.add_argument("--deep", action="store_true", help="twice the research (and about twice the cost)")
     add("lint", cmd_lint, "style-check sequences/<target>.md", target=True)
     cr = add("create", cmd_create, "push the copy to an Apollo sequence (paused unless --activate)", target=True,
              target_required=True)

@@ -116,7 +116,7 @@ The student wants {term}. Expected graduation: {graduation}.
 Write a research brief with these sections:
 1. What {company} does, in one or two plain sentences.
 2. The team, product, or org this role most likely sits in, and what it works on. Use the posting if you can read it.
-3. Two to four recent facts about {company} that someone applying to this role could mention to show real, specific \
+3. {fact_count} recent facts about {company} that someone applying to this role could mention to show real, specific \
 interest, each published within the last 365 days. For each: the fact in one sentence, why it matters in plain words, \
 the exact source URL, the source title, and the publication date as YYYY-MM-DD. Favor launches, product milestones, \
 and engineering or research posts related to this role over funding news and mission statements.
@@ -214,24 +214,35 @@ def verify_facts(facts: list[dict], sources: dict, *, today: date, max_age_days:
     return kept, dropped
 
 
-def research(llm: LLM, target: Target, profile: Profile, *, today: date, max_rounds: int = 5) -> Research:
+# Research depth. "light" is the default: about half the cost of "deep" (fewer searches and page reads,
+# and medium effort), and still reads the posting plus enough news to find one verified fact.
+DEPTH = {
+    "light": {"searches": 3, "fetches": 2, "effort": "medium", "max_tokens": 32000},
+    "deep": {"searches": 6, "fetches": 4, "effort": "high", "max_tokens": 64000},
+}
+
+
+def research(llm: LLM, target: Target, profile: Profile, *, today: date, max_rounds: int = 5,
+             depth: str = "light") -> Research:
     prompt = RESEARCH_PROMPT.format(
         today=today.isoformat(), company=target.company, domain=target.domain, role=target.role,
         location=target.location or "not stated",
         posting=target.posting_url or "not provided; find it on the company careers site if you can",
         experiences=profile.experiences_for(target.track) or "(none listed)", term=profile.term,
         graduation=profile.graduation or "not stated",
+        fact_count="One to three" if depth == "light" else "Two to four",
     )
-    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 6},
-             {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 4}]
+    cfg = DEPTH[depth]
+    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": cfg["searches"]},
+             {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": cfg["fetches"]}]
     messages: list[dict] = [{"role": "user", "content": prompt}]
     sources: dict[str, dict] = {}
     texts: list[str] = []
     assistant_blocks: list = []
     stop = ""
     for _ in range(max_rounds):
-        response = llm.create(stream=True, max_tokens=64000, system=RESEARCH_SYSTEM, messages=messages, tools=tools,
-                              output_config={"effort": "high"})
+        response = llm.create(stream=True, max_tokens=cfg["max_tokens"], system=RESEARCH_SYSTEM, messages=messages,
+                              tools=tools, output_config={"effort": cfg["effort"]})
         _collect(response.content, sources)
         texts += [b.text for b in response.content if getattr(b, "type", None) == "text"]
         stop = response.stop_reason

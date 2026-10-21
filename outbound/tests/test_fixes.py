@@ -361,7 +361,24 @@ def test_paused_turns_accumulate_and_cutoffs_are_flagged(workdir):
     third = rounds[2][1]["content"]
     assert [b.text for b in third] == ["part 1. ", "part 2. "]   # both earlier rounds resent
     assert found.incomplete.startswith("the research reply was cut off")
-    assert claude.requests[0]["max_tokens"] == 64000
+    assert claude.requests[0]["max_tokens"] == 32000
+
+
+def test_research_depth_light_by_default_deep_on_request(workdir):
+    def uses(req):
+        return {t["name"]: t["max_uses"] for t in req["tools"]}
+
+    claude = FakeClaude()
+    research(LLM(claude), load_targets()[0], load_profile(), today=date(2026, 10, 19))
+    light = claude.requests[0]
+    assert uses(light) == {"web_search": 3, "web_fetch": 2}
+    assert light["output_config"]["effort"] == "medium" and light["max_tokens"] == 32000
+
+    claude = FakeClaude()
+    research(LLM(claude), load_targets()[0], load_profile(), today=date(2026, 10, 19), depth="deep")
+    deep = claude.requests[0]
+    assert uses(deep) == {"web_search": 6, "web_fetch": 4}
+    assert deep["output_config"]["effort"] == "high" and deep["max_tokens"] == 64000
 
 
 def test_cost_counts_cache_tokens():
