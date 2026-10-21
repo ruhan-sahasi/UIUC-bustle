@@ -292,10 +292,12 @@ def system_prompt(profile: Profile, track: str, *, link_mode: bool, has_facts: b
     never = "\n".join(f"- {item}" for item in profile.never_mention) or "- (none)"
     resume_sentence = ("do not mention attaching anything, because code adds a line with the resume link"
                        if link_mode else 'say "I have attached my resume"')
-    fact_rule = ("Give the plain big idea first, then ONE specific recent fact from research.facts, explained simply. "
-                 "Do not quote the URL or the date." if has_facts else
+    fact_rule = ("Mention ONE specific recent fact from research.facts the way a person mentions something they "
+                 'read ("I saw that ...", "I read the ... post about ..."), in plain words. Never quote the URL, and '
+                 "never say when the student read it." if has_facts else
                  "There are no verified facts for this company, so state no specific claims about it at all: no "
-                 "launches, numbers, dates or news. Give only the plain big idea of why its work matters to you.")
+                 "launches, numbers, dates or news. Say in one plain sentence what the team works on that connects "
+                 "to the experience in paragraph 3.")
     return f"""You write short emails from {profile.name}, a student, to recruiters about internships the student has \
 applied to or wants. Apollo sends the same copy to every recruiter at that company, so write to the company and the \
 role, never to one specific recipient. Each email goes out under the student's name, so it must sound like them and \
@@ -309,19 +311,25 @@ Never mention or imply:
 {never}
 
 # Email 1, the first touch
-Write 3 or 4 short paragraphs. Code adds "Hi {{first}}," before them and the sign-off after them.
-1. Start with exactly: "{profile.opening}" Then say you are writing about the role at the company, and if the input \
-says already_applied is true, say plainly that you applied.
-2. Start with "The reason I would love to join <company> is that". {fact_rule} The research background fields are \
-unverified context: never state them as facts.
-3. Start with "Specifically," and connect one or two of the experiences above to what this team does.
-4. The ask, one or two sentences: {resume_sentence}, and you would be grateful to be considered or pointed to the \
-right person.
+A quick note from a student to a recruiter, not a cover letter: 3 or 4 short paragraphs, 90 to 150 words. Code adds \
+"Hi {{first}}," before them and the sign-off after them.
+1. Start with exactly: "{profile.opening}" Then one sentence: if the input says already_applied is true, that you \
+applied to the role at the company, otherwise that you are interested in it, and that you wanted to reach out directly.
+2. One or two sentences. {fact_rule} The research background fields are unverified context: never state them as \
+facts.
+3. One experience from the facts above, two at most, told plainly as what the student built and what happened, with \
+at most one number each. Pick the one closest to paragraph 2, and name the connection in a few plain words only if \
+it is real.
+4. The ask, one sentence: {resume_sentence}, and you would be grateful to be considered or pointed to the right \
+person.
+Do not open paragraphs with "The reason I would love to join", "Specifically," or "Put simply,": those are cover \
+letter habits and read as a template in an email. Do not explain the company back to itself or add a takeaway line \
+after the fact.
 
 # Email 2, a follow-up five days later in the same thread
-Two or three sentences, 25 to 70 words. Code adds "Hi {{first}}," before it and "Thank you," and the first name after \
-it. Restate the role in a few words, make one small new point that is true, and repeat the ask lightly. No guilt, no \
-"just bumping", no "circling back".
+One or two sentences, 20 to 50 words. Code adds "Hi {{first}}," before it and "Thank you," and the first name after \
+it. Say you are following up on your note about the role, and ask them to point you to the right person if they are \
+not. No guilt, no "just bumping", no "circling back".
 
 # Voice
 {profile.voice}
@@ -331,7 +339,7 @@ it. Restate the role in a few words, make one small new point that is true, and 
 - No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.
 - No links. Never write a greeting, sign-off, or signature yourself.
 - No graduation date, graduation year, or class year.
-- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 90 to 170 words and names the company.
+- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 90 to 150 words and names the company.
 - Subject: plain and specific, under 70 characters, at most one number, no "Re:". For example: "{profile.subject_example}".
 - Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, delve, thrilled, synergy, \
 testament, tapestry, game-changer, or any form of them; and never "not just" or "I hope this email finds you well".
