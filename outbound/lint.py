@@ -116,17 +116,23 @@ def prose_lines(body: str, fixed_lines: list[str]) -> list[str]:
     return [line for line in lines if line.strip() not in fixed and not SIGN_OFF.match(line)]
 
 
+def forbidden_chars(strict: bool) -> dict[str, str]:
+    """Strict bans apostrophes too; relaxed (`Strict punctuation: no`) keeps only the dash and tilde bans."""
+    return FORBIDDEN if strict else {ch: label for ch, label in FORBIDDEN.items() if ch not in APOSTROPHES}
+
+
 def _shared_checks(text: str, *, where: str, company: str, banned_topics: list[str], extra_banned_words: list[str],
-                   graduation: re.Pattern, allowed_links: list[str], merge_text: str | None = None) -> list[Violation]:
+                   graduation: re.Pattern, allowed_links: list[str], merge_text: str | None = None,
+                   strict: bool = True) -> list[Violation]:
     v: list[Violation] = []
     masked = _mask(text, [company, *allowed_links])
-    for ch, label in FORBIDDEN.items():
+    for ch, label in forbidden_chars(strict).items():
         if ch in masked:
             i = masked.find(ch)
             v.append(Violation(where, "forbidden_char", f"{label} near ...{masked[max(0, i - 20):i + 20].strip()}..."))
-    if any(re.search(r"\S\s+-{1,2}\s", line) for line in masked.splitlines()):
+    if strict and any(re.search(r"\S\s+-{1,2}\s", line) for line in masked.splitlines()):
         v.append(Violation(where, "forbidden_char", "a hyphen used as a dash; rewrite the sentence"))
-    if re.search(r"[()]", masked):
+    if strict and re.search(r"[()]", masked):
         v.append(Violation(where, "parentheses", "no parentheses or asides"))
     if "!" in masked:
         v.append(Violation(where, "exclamation", "no exclamation marks"))
@@ -157,7 +163,7 @@ def _shared_checks(text: str, *, where: str, company: str, banned_topics: list[s
 
 
 def lint_subject(subject: str, *, company: str, banned_topics: list[str] = (), extra_banned_words: list[str] = (),
-                 graduation: str = "") -> list[Violation]:
+                 graduation: str = "", strict: bool = True) -> list[Violation]:
     v = []
     if not subject.strip():
         v.append(Violation("subject", "empty", "write a subject line"))
@@ -169,14 +175,14 @@ def lint_subject(subject: str, *, company: str, banned_topics: list[str] = (), e
         v.append(Violation("subject", "numbers", "at most 1 number in the subject"))
     v += _shared_checks(subject, where="subject", company=company, banned_topics=list(banned_topics),
                         extra_banned_words=list(extra_banned_words), graduation=graduation_pattern(graduation),
-                        allowed_links=[])
+                        allowed_links=[], strict=strict)
     return v
 
 
 def lint_email(body: str, *, where: str, first_touch: bool, company: str, opening: str = "",
                fixed_lines: list[str] | None = None, banned_topics: list[str] | None = None,
                extra_banned_words: list[str] | None = None, allowed_links: list[str] | None = None,
-               graduation: str = "") -> list[Violation]:
+               graduation: str = "", strict: bool = True) -> list[Violation]:
     v: list[Violation] = []
     lines = body.splitlines()
     if not lines or not re.match(r"^\s*hi\s+\{first\},?\s*$", lines[0], re.I):
@@ -187,7 +193,7 @@ def lint_email(body: str, *, where: str, first_touch: bool, company: str, openin
     links = allowed_links or []
     v += _shared_checks(prose, where=where, company=company, banned_topics=banned_topics or [],
                         extra_banned_words=extra_banned_words or [], graduation=graduation_pattern(graduation),
-                        allowed_links=links, merge_text=body)
+                        allowed_links=links, merge_text=body, strict=strict)
     masked = _mask(prose, [company, *links])
     n_words, n_numbers = words(prose), count_numbers(masked)
     if n_numbers > 3:
@@ -204,14 +210,15 @@ def lint_email(body: str, *, where: str, first_touch: bool, company: str, openin
     return v
 
 
-def check_fixed_lines(lines: list[str], *, banned_topics: list[str], graduation: str) -> list[Violation]:
+def check_fixed_lines(lines: list[str], *, banned_topics: list[str], graduation: str,
+                      strict: bool = True) -> list[Violation]:
     """The profile's closing, sign-off and signature go into every email, so check them once.
     Phone numbers and parentheses are fine in a signature."""
     v = []
     grad = graduation_pattern(graduation)
     for line in lines:
         masked = URL.sub(" ", line)
-        for ch, label in FORBIDDEN.items():
+        for ch, label in forbidden_chars(strict).items():
             if ch in masked:
                 v.append(Violation("profile.md", "forbidden_char", f"{label} in {line!r}"))
         for topic in banned_topics:

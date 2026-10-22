@@ -290,21 +290,27 @@ BLOCKING_MARKERS = ("NO VERIFIED FACT", "RESEARCH INCOMPLETE")
 
 def system_prompt(profile: Profile, track: str, *, link_mode: bool, has_facts: bool) -> str:
     never = "\n".join(f"- {item}" for item in profile.never_mention) or "- (none)"
+    strict = profile.strict_punctuation
     resume_sentence = ("do not mention attaching anything, because code adds a line with the resume link"
-                       if link_mode else 'say "I have attached my resume"')
-    fact_rule = ("one sentence with ONE specific recent fact from research.facts, mentioned the way a person "
-                 'mentions something they read ("I read recently that ..."), joined to a plain line on why it '
-                 'appeals, such as "and that is the kind of work I want to do next summer". Never quote the URL.'
-                 if has_facts else
-                 "one plain sentence on the kind of work at the company the student wants to do. There are no "
-                 "verified facts for this company, so make no specific claims about it: no launches, numbers, "
-                 "dates or news.")
+                       if link_mode else 'say "I have attached my resume"' if strict else 'say "I\'ve attached my resume"')
+    applied = ("I applied to the <term> <role> role at <company>" if strict else "I applied to <company>\'s <term> <role> role")
+    fact_rule = ('one sentence: "I read recently that <ONE specific recent fact from research.facts, in plain words>, '
+                 'and that sort of product, where <the problem it shares with the experiences below>, is exactly what '
+                 'I have experience doing." Never quote the URL.' if has_facts else
+                 "one sentence on the kind of product the team builds and how it matches what the student has done. "
+                 "There are no verified facts for this company, so make no specific claims about it: no launches, "
+                 "numbers, dates or news.")
     follow_up = ("""# Email 2, a follow-up five days later in the same thread
 One or two sentences, 20 to 50 words. Code adds "Hi {first}," before it and "Thank you," and the first name after \
 it. Say you are following up on your note about the role at the company, and ask them to point you to the right \
 person if they are not. Nothing else: no new project, no tech stack. No guilt, no "just bumping", no "circling back".
 
 """ if profile.follow_up else "")
+    punctuation = ('- No apostrophes, straight or curly: write "I am", "do not", and reword possessives ("the team at '
+                   'X").\n- No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.'
+                   if strict else
+                   "- Contractions, possessives, a spaced hyphen as a dash and a short parenthetical are fine, as in "
+                   "the example.\n- No em dashes, en dashes, tildes, or exclamation marks.")
     example = (f"The shape to match, written for a different company. Never reuse its company facts:\n"
                f"{profile.example_email}\n\n" if profile.example_email else "")
     email2_output = ("email2_paragraphs" if profile.follow_up else
@@ -322,31 +328,24 @@ Never mention or imply:
 {never}
 
 # Email 1, the first touch
-Punchy and to the point, 4 short paragraphs, 130 to 190 words. Code adds "Hi {{first}}," before them and the \
-sign-off after them.
-1. One sentence starting "TL;DR: ", at most 35 words: "I applied to your <term> <role> role" (if already_applied is \
-false, "I am interested in" instead), then the one thing the student has built that matches what this team works on, \
-named in the team's own terms. No numbers, no praise, no claim about being a great fit.
-2. Exactly: "{profile.opening}" Then, in the same paragraph, {fact_rule} The research background fields are \
-unverified context: never state them as facts.
-3. The proof: the two experiences from the facts above that fit this team best, the closest one first. For each, one \
-or two short sentences: where, with its descriptor ("an a16z-backed startup"), what the student built and how it works \
-in plain verbs, and one result. Prefer lines marked "Preferred wording". Write percent as a word.
-4. The ask, one sentence: {resume_sentence}, and you would be grateful to be considered or pointed to the right \
-person.
-Every sentence earns its place. Never "I am really excited", generic hype, superlatives like "my dream company", or \
-interests the facts do not show. Do not open paragraphs with "The reason I would love to join", "Specifically," or \
-"Put simply,", do not explain the company back to itself, and do not add a takeaway line after the fact.
+Two paragraphs, 110 to 180 words. Code adds "Hi {{first}}," before them and the closing and sign-off after them.
+1. Start with exactly: "{profile.opening}" Then: "{applied} and wanted to reach out directly because the \
+opportunity really interests me." (if already_applied is false, "I am interested in" instead of "I applied to"). \
+Then {fact_rule} The research background fields are unverified context: never state them as facts.
+2. The two experiences from the facts above that fit this team best, the closest one first, one sentence each, using \
+lines marked "Preferred wording" where they exist. End the paragraph with the ask: {resume_sentence}, and you would \
+be grateful to be considered or pointed to the right person.
+Never "I am really excited", generic hype, superlatives like "my dream company", or interests the facts do not show. \
+Do not explain the company back to itself or add a takeaway line after the fact.
 
 {example}{follow_up}# Voice
 {profile.voice}
 
 # Hard rules. A checker rejects the copy if any is broken, in the subject too.
-- No apostrophes, straight or curly: write "I am", "do not", and reword possessives ("the team at X").
-- No em dashes, en dashes, tildes, hyphens used as dashes, parentheses, or exclamation marks.
+{punctuation}
 - No links. Never write a greeting, sign-off, or signature yourself.
 - No graduation date, graduation year, or class year.
-- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 130 to 190 words and names the company.
+- At most 3 numbers per email ("{profile.term}" does not count). Email 1 is 110 to 180 words and names the company.
 - Subject: exactly "Interested in the <role> role at <company>", shortening the role name if needed to stay under 70 \
 characters. No number, no "Re:".
 - Never use: leveraged, utilized, robust, seamless, cutting-edge, passionate, spearheaded, delve, thrilled, synergy, \
@@ -378,7 +377,7 @@ def lint_sequence(seq: Sequence, *, profile: Profile, target: Target) -> list[Vi
     resume = profile.resume(target.track)
     links = [resume] if link_mode else []
     common = dict(banned_topics=profile.banned_topics, extra_banned_words=profile.extra_banned_words,
-                  graduation=profile.graduation_years)
+                  graduation=profile.graduation_years, strict=profile.strict_punctuation)
     v = lint_subject(seq.subject, company=target.company, **common)
     for i, body in enumerate(seq.emails, start=1):
         v += lint_email(body, where=f"email {i}", first_touch=(i == 1), company=target.company,
@@ -393,7 +392,7 @@ def lint_sequence(seq: Sequence, *, profile: Profile, target: Target) -> list[Vi
     elif "my resume:" in first.lower() or re.search(r"https?://", "\n".join(prose_lines(first, fixed))):
         v.append(Violation("email 1", "resume", "has a resume link, but profile.md is in attach mode"))
     v += check_fixed_lines(fixed, banned_topics=profile.banned_topics,
-                           graduation=profile.graduation_years)
+                           graduation=profile.graduation_years, strict=profile.strict_punctuation)
     for marker in BLOCKING_MARKERS:
         if marker in seq.preamble:
             v.append(Violation("header", "review", f'remove the "{marker}" line once you have checked the copy'))
@@ -418,9 +417,10 @@ def write(llm: LLM, target: Target, profile: Profile, found: Research, *, max_ro
     feedback, seq, problems = "", None, []
     for attempt in range(1, max_rounds + 1):
         out = llm.json(system=system, user=user + feedback, schema=WRITE_SCHEMA, effort="high")
-        subject = expand_contractions(out["subject"].strip())
-        e1 = [expand_contractions(p) for p in out["email1_paragraphs"]]
-        e2 = [expand_contractions(p) for p in out["email2_paragraphs"]]
+        expand = expand_contractions if profile.strict_punctuation else (lambda text: text)
+        subject = expand(out["subject"].strip())
+        e1 = [expand(p) for p in out["email1_paragraphs"]]
+        e2 = [expand(p) for p in out["email2_paragraphs"]]
         body1, body2 = assemble(profile, target.track, e1, e2)
         if profile.follow_up:
             seq = Sequence(subject=subject, emails=[body1, body2], days=[0, FOLLOWUP_DAY])

@@ -11,6 +11,7 @@ Resume file swe: ~/Desktop/Jordan_Lee_Resume_swe.pdf
 Closing: Thank you for reading and I look forward to hearing back!
 Sign-off: Warm Regards,
 Follow-up: yes
+Strict punctuation: yes
 
 How the settings above are used:
 - Opening is the exact first sentence of every first email.
@@ -21,6 +22,8 @@ How the settings above are used:
   the launch instructions tell you to attach.
 - `## Example email` below is the shape every first email matches: a TL;DR line, the opening plus one fact
   about the company, the proof, the ask. Only its shape is reused, never its company facts.
+- Strict punctuation: `yes` bans apostrophes, a hyphen used as a dash, and parentheses. `no` allows them
+  (contractions, possessives); em dashes, en dashes and tildes stay banned either way.
 - Follow-up: `yes` adds a short reply in the same thread five days later, which Apollo skips for
   anyone who replied. `no` sends only the first email, for following up by hand.
 

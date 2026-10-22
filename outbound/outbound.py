@@ -167,7 +167,7 @@ def cmd_check(args) -> int:
         from lint import check_fixed_lines
 
         for v in check_fixed_lines(profile.fixed_lines(), banned_topics=profile.banned_topics,
-                                   graduation=profile.graduation_years):
+                                   graduation=profile.graduation_years, strict=profile.strict_punctuation):
             line(False, "profile.md", str(v))
     except ConfigError as exc:
         line(False, "profile.md", str(exc))

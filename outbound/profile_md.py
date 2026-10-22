@@ -67,10 +67,19 @@ class Profile:
         """The `## Example email` section: four paragraphs whose shape every first email should match."""
         return self.sections.get("Example email", "").strip()
 
+    def _flag(self, name: str) -> bool:
+        """A yes/no setting that defaults to yes."""
+        return self.settings.get(name, "yes").strip().lower() not in ("no", "n", "false", "off", "0")
+
     @property
     def follow_up(self) -> bool:
         """`Follow-up: no` drafts only the first email, for following up by hand."""
-        return self.settings.get("Follow-up", "yes").strip().lower() not in ("no", "n", "false", "off", "0")
+        return self._flag("Follow-up")
+
+    @property
+    def strict_punctuation(self) -> bool:
+        """`Strict punctuation: no` allows contractions, possessives, a spaced hyphen and parentheses."""
+        return self._flag("Strict punctuation")
 
     @property
     def signature_lines(self) -> list[str]:

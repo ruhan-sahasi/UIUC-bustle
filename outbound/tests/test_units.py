@@ -248,3 +248,14 @@ def test_example_email_shapes_the_prompt_only_when_present():
     assert "The shape to match" in system_prompt(p, "swe", link_mode=False, has_facts=True)
     p.sections.pop("Example email")
     assert "The shape to match" not in system_prompt(p, "swe", link_mode=False, has_facts=True)
+
+
+def test_relaxed_punctuation_allows_contractions_but_not_em_dashes():
+    from lint import lint_email
+    body = ("Hi {first},\n\nMy name is Jordan and I'm at Example Corp's favorite school - really (truly) - and I've "
+            "applied. " + "Plain words here. " * 30)
+    kw = dict(where="email 1", first_touch=True, company="Example Corp")
+    strict = {v.rule for v in lint_email(body, **kw)}
+    assert {"forbidden_char", "parentheses"} <= strict
+    assert {v.rule for v in lint_email(body, strict=False, **kw)} == set()
+    assert "forbidden_char" in {v.rule for v in lint_email(body.replace(" - ", " — "), strict=False, **kw)}
